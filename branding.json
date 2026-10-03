@@ -3,5 +3,8 @@
   "tagline": "Meeting notes, on your terms",
   "identifier": "dev.synth.voice",
   "accent": "221 83% 53%",
-  "logo": "/synth-mark.png"
+  "logo": "/synth-mark.png",
+  "source_url": "https://github.com/AlexHHPS/synth",
+  "documentation_url": "https://github.com/AlexHHPS/synth/blob/main/README.md",
+  "support_url": "https://github.com/AlexHHPS/synth/issues"
 }

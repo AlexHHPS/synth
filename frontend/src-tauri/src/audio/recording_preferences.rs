@@ -41,36 +41,12 @@ impl Default for RecordingPreferences {
 
 /// Get the default recordings folder based on platform
 pub fn get_default_recordings_folder() -> PathBuf {
-    #[cfg(target_os = "windows")]
-    {
-        // Windows: %USERPROFILE%\Music\meetily-recordings
-        if let Some(music_dir) = dirs::audio_dir() {
-            music_dir.join("meetily-recordings")
-        } else {
-            // Fallback to Documents if Music folder is not available
-            dirs::document_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("meetily-recordings")
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        // Keep temporary audio in this fork's namespace, separate from upstream Meetily.
-        dirs::data_local_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("dev.synth.voice")
-            .join("capture")
-            .join("raw")
-    }
-
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        // Linux/Others: ~/Documents/meetily-recordings
-        dirs::document_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("meetily-recordings")
-    }
+    // Temporary captures always belong to the configured product namespace.
+    dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(crate::product_identity::identifier())
+        .join("capture")
+        .join("raw")
 }
 
 /// Ensure the recordings directory exists

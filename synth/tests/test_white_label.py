@@ -26,7 +26,9 @@ class WhiteLabelTests(unittest.TestCase):
             command = [sys.executable, str(root/'scripts/configure-brand.py'), '--name', 'Example Voice',
                        '--identifier', 'dev.example.voice', '--accent', '160 70% 35%',
                        '--logo', '/example-mark.svg', '--api-url', 'https://voice.example.com',
-                       '--supabase-url', 'https://exampleproject.supabase.co']
+                       '--supabase-url', 'https://exampleproject.supabase.co',
+                       '--source-url', 'https://example.com/source', '--documentation-url', 'https://example.com/docs',
+                       '--support-url', 'https://example.com/support']
             subprocess.run(command, check=True, capture_output=True)
             brand = json.loads((root/'branding.json').read_text())
             native = json.loads((root/'frontend/src-tauri/tauri.conf.json').read_text())
@@ -35,6 +37,8 @@ class WhiteLabelTests(unittest.TestCase):
             self.assertEqual(brand['identifier'], native['identifier'])
             self.assertIn(brand['identifier'], namespace.read_text())
             self.assertEqual(brand['logo'], '/example-mark.svg')
+            self.assertEqual(brand['source_url'], 'https://example.com/source')
+            self.assertEqual(brand['support_url'], 'https://example.com/support')
             self.assertEqual(deploy['auth_mode'], 'supabase')
             self.assertIn(deploy['api_url'], (root/'.cargo/config.toml').read_text())
             self.assertIn('--brand: 160 70% 35%;', (root/'frontend/src/synth/design-system/tokens.css').read_text())
@@ -43,3 +47,8 @@ class WhiteLabelTests(unittest.TestCase):
             result = subprocess.run(rejected, capture_output=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(json.loads((root/'synth/deployment.json').read_text()), deploy)
+            rejected_link = command.copy()
+            rejected_link[rejected_link.index('--support-url')+1] = 'javascript:alert(1)'
+            result = subprocess.run(rejected_link, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(json.loads((root/'branding.json').read_text()), brand)

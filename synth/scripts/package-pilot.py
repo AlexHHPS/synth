@@ -41,6 +41,7 @@ for source in [ROOT / "synth/.runtime/ffmpeg-8.0.tar.xz",
                ROOT / "synth/.runtime/ffmpeg-8.0/COPYING.LGPLv2.1"]:
     if not source.is_file(): raise FileNotFoundError("Required FFmpeg source/build/license missing: " + source.name)
     shutil.copy2(source, notices / source.name)
+shutil.copy2(ROOT / "synth/.runtime/models/speakers-community1/LICENSE", notices / "Community1-LICENSE.txt")
 ffmpeg = OUTPUT / "host/synth-voice-host/_internal/bin/ffmpeg"
 expected_binary = ROOT / "frontend/src-tauri/binaries/ffmpeg-aarch64-apple-darwin"
 recipe = json.loads((ROOT / "synth/.runtime/ffmpeg-build.json").read_text())

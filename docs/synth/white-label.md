@@ -11,13 +11,16 @@ Configure your backend and optional Google sign-in **before building**:
 python3 scripts/configure-brand.py --name "Example Voice" \
   --identifier dev.example.voice --accent "160 70% 35%" \
   --logo /example-mark.svg --generate-icons --api-url https://voice.example.com \
-  --supabase-url https://exampleproject.supabase.co
+  --supabase-url https://exampleproject.supabase.co \
+  --source-url https://example.com/source \
+  --documentation-url https://example.com/docs \
+  --support-url https://example.com/support
 ```
 
 Supply your own square PNG or SVG logo in `frontend/public`. `--generate-icons`
 updates native bundle icons and the web favicon from that same asset (frontend
 dependencies must be installed).
-The script synchronizes the product metadata, UI tokens, native destination
+The script synchronizes the product metadata, About links, notification identity, UI tokens, native destination
 allowlist, identifier, host app-data and Keychain names. Rebuild both the native
 app and the packaged host; mixing brands or deployments is unsupported.
 The JS interface cannot choose another destination for credentials.
@@ -30,3 +33,6 @@ HTTPS API and Supabase origins. Backend Auth settings are configured separately
 in the server environment. Existing installs require a deliberate migration of
 backend-config.json if the approved destination changes; session and library
 migration must not happen implicitly.
+
+The required upstream attribution remains independent of these product links.
+See [Community and redistribution policy](community-policy.md).

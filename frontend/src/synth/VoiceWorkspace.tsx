@@ -4,7 +4,7 @@ import { brand } from './brand';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Image from 'next/image';
 import { Field } from '@base-ui/react/field';
-import { Activity, ArrowLeft, ChevronRight, FileText, FolderClosed, Library, LockKeyhole, Mic, Plug, Plus, RefreshCw, Search } from 'lucide-react';
+import { Activity, ArrowLeft, ChevronRight, FileText, FolderClosed, Info, Library, LockKeyhole, Mic, Plug, Plus, RefreshCw, Search } from 'lucide-react';
 import { Button } from './design-system/button';
 import { FormField } from './design-system/form-field';
 import { TooltipProvider } from './design-system/tooltip';
@@ -18,6 +18,7 @@ import { IntegrationsView } from './IntegrationsView';
 import { MeetingDetection } from './MeetingDetection';
 import { VoiceOnboarding } from './VoiceOnboarding';
 import { CorporateSession } from './CorporateSession';
+import { About } from '@/components/About';
 
 const stateLabels: Record<string, string> = {
   capturing: 'Captura', queued: 'En cola', transcribing: 'Transcribiendo', processing: 'Procesando',
@@ -45,7 +46,7 @@ function VoiceWorkspaceContent() {
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [manageFolder, setManageFolder] = useState(false);
   const [detailRefresh, setDetailRefresh] = useState(0);
-  const [view, setView] = useState<'library' | 'operations' | 'capture' | 'integrations' | 'voice'>('library');
+  const [view, setView] = useState<'library' | 'operations' | 'capture' | 'integrations' | 'voice' | 'about'>('library');
   const showProcessing = useCallback(() => { setView('operations'); setSelected(null); }, []);
   useEffect(() => { if (new URLSearchParams(window.location.search).get('capture') === '1') setView('capture'); }, []);
   const generation = useRef(0);
@@ -115,14 +116,15 @@ function VoiceWorkspaceContent() {
         {folders.map(f => <button type="button" key={f.id} className={`voice-nav-row ${folder === f.id ? 'is-selected' : ''}`} onClick={() => chooseFolder(f.id)}><FolderClosed size={16} /><span>{f.name}</span></button>)}
         {newFolder && <form className="voice-folder-form" onSubmit={createFolder}><FormField label="Nueva carpeta" hint="Privada por defecto."><Field.Control className="voice-input" value={folderName} onChange={e => setFolderName(e.target.value)} maxLength={200} autoFocus /></FormField><div className="flex gap-2"><Button loading={creating} type="submit" size="sm" disabled={!folderName.trim()}>Crear</Button><Button type="button" variant="ghost" size="sm" onClick={() => setNewFolder(false)}>Cancelar</Button></div></form>}
       </div>
-      <div className="voice-sidebar-footer"><LockKeyhole size={14} /><div><span>Acceso privado</span><small>{actor || 'Conectando al servicio local…'}</small></div></div>
+      <button type="button" className={`voice-nav-row ${view === 'about' ? 'is-selected' : ''}`} onClick={() => { setView('about'); setSelected(null); }}><Info size={16} /> Acerca de {brand.name}</button>
+      <div className="voice-sidebar-footer"><LockKeyhole size={14} /><div><span>Acceso privado</span><small>{actor || 'Conectando a tu biblioteca…'}</small></div></div>
     </aside>
     <main className="voice-main">
-      <header className="voice-topbar"><span>{brand.name} <ChevronRight size={12} /> {view === 'voice' ? 'Perfil de voz' : view === 'integrations' ? 'Integraciones' : view === 'capture' ? 'Nueva nota' : view === 'operations' ? 'Procesamiento' : selected ? 'Reunión' : folderTitle}</span><Button variant="ghost" size="xs" loading={loading} onClick={() => { setDetailRefresh(old => old + 1); void refresh(); }}><RefreshCw size={14} /> Actualizar</Button></header>
+      <header className="voice-topbar"><span>{brand.name} <ChevronRight size={12} /> {view === 'about' ? 'Acerca de' : view === 'voice' ? 'Perfil de voz' : view === 'integrations' ? 'Integraciones' : view === 'capture' ? 'Nueva nota' : view === 'operations' ? 'Procesamiento' : selected ? 'Reunión' : folderTitle}</span><Button variant="ghost" size="xs" loading={loading} onClick={() => { setDetailRefresh(old => old + 1); void refresh(); }}><RefreshCw size={14} /> Actualizar</Button></header>
       <MeetingDetection onPrepare={() => { setView('capture'); setSelected(null); }} />
       <AudioPermissions />
       {error && <div className="voice-alert" role="alert">{error}</div>}
-      {view === 'voice' ? <VoiceOnboarding /> : view === 'integrations' ? <IntegrationsView folders={folders} refreshToken={detailRefresh} onCreateFolder={() => { chooseFolder(null); setNewFolder(true); }} /> : view === 'capture' ? <CaptureView folders={folders} onQueued={showProcessing} /> : view === 'operations' ? <OperationsView folders={folders} meetings={meetings} refreshToken={detailRefresh} onOpen={id => { setView('library'); setSelected(id); void refresh(); }} /> : selected ? <MeetingView key={selected} id={selected} refreshToken={detailRefresh} folders={folders} onBack={() => setSelected(null)} onChanged={refresh} /> : <div className="voice-library">
+      {view === 'about' ? <div className="voice-library"><About /></div> : view === 'voice' ? <VoiceOnboarding /> : view === 'integrations' ? <IntegrationsView folders={folders} refreshToken={detailRefresh} onCreateFolder={() => { chooseFolder(null); setNewFolder(true); }} /> : view === 'capture' ? <CaptureView folders={folders} onQueued={showProcessing} /> : view === 'operations' ? <OperationsView folders={folders} meetings={meetings} refreshToken={detailRefresh} onOpen={id => { setView('library'); setSelected(id); void refresh(); }} /> : selected ? <MeetingView key={selected} id={selected} refreshToken={detailRefresh} folders={folders} onBack={() => setSelected(null)} onChanged={refresh} /> : <div className="voice-library">
         <div className="voice-page-heading"><div><p className="voice-eyebrow">REUNIONES Y CONOCIMIENTO</p><h1>{folderTitle}</h1><p>Notas, conversaciones y decisiones, con sus fuentes.</p></div>{currentFolder?.can_manage ? <Button variant="outline" size="sm" onClick={() => setManageFolder(!manageFolder)}>{manageFolder ? 'Cerrar ajustes' : 'Gestionar carpeta'}</Button> : <LockKeyhole size={22} className="text-muted-foreground" />}</div>
         {manageFolder && currentFolder?.can_manage && <FolderManagement key={currentFolder.id} folder={currentFolder} onChanged={refresh} onDeleted={() => { chooseFolder(null); void refresh(); }} />}
         <form className="voice-search" role="search" onSubmit={search}><Search size={17} /><input aria-label="Buscar en transcripciones" placeholder="Buscar en las conversaciones…" value={query} maxLength={500} onChange={e => { setQuery(e.target.value); if (!e.target.value) setHits(null); }} /><Button type="submit" variant="outline" size="sm" loading={searching}>Buscar</Button></form>

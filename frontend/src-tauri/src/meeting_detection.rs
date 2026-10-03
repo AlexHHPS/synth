@@ -19,7 +19,8 @@ fn now() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default
 fn candidate(id: &str, input: bool, output: bool) -> Option<String> {
     if !input || id.is_empty() || id.len() > 256 { return None; }
     let lower = id.to_lowercase();
-    if ["ai.synth.", "meetily", "wispr", "dictation", "com.apple.speech", "com.apple.audio"].iter().any(|x| lower.contains(x)) { return None; }
+    if lower == crate::product_identity::identifier() || lower.starts_with(&format!("{}.", crate::product_identity::identifier())) { return None; }
+    if ["meetily", "wispr", "dictation", "com.apple.speech", "com.apple.audio"].iter().any(|x| lower.contains(x)) { return None; }
     for (prefix, label) in [("us.zoom.xos", "Zoom"), ("com.microsoft.teams", "Teams"), ("com.microsoft.teams2", "Teams"), ("com.tinyspeck.slackmacgap", "Slack"), ("com.hnc.discord", "Discord"), ("com.apple.facetime", "FaceTime"), ("com.cisco.webex", "Webex")] {
         if lower == prefix || lower.starts_with(&format!("{prefix}.")) { return Some(label.into()); }
     }
@@ -169,6 +170,11 @@ mod mac {
 #[cfg(test)] mod tests {
     use super::*;
     fn zoom() -> Vec<(String,bool,bool)> { vec![("us.zoom.xos".into(),true,false)] }
+    #[test] fn configured_product_and_helpers_never_prompt_for_themselves() {
+        assert!(candidate(crate::product_identity::identifier(), true, true).is_none());
+        assert!(candidate(&format!("{}.helper", crate::product_identity::identifier()), true, true).is_none());
+        assert!(candidate("org.other.call", true, true).is_some());
+    }
     #[test] fn debounce_dismiss_reconnect_and_expiry() {
         let mut d = Detector::default(); assert!(d.observe(zoom(),100,false).is_empty());
         assert_eq!(d.observe(zoom(),102,false).len(),1); assert!(d.observe(zoom(),104,false).is_empty());

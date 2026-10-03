@@ -9,7 +9,7 @@ license notices in their source and dependencies; consult Cargo.lock for the
 versions included in a build.
 
 The speaker runtime uses FluidAudio at the revision pinned in
-synth/speakers/native/Package.swift, under the MIT License reproduced in
+synth/speakers/native/Package.swift, under the Apache License 2.0 reproduced in
 [FluidAudio-LICENSE.txt](docs/synth/third-party/FluidAudio-LICENSE.txt).
 The scoped Community-1 Core ML models are attributed to pyannote, WeSpeaker,
 BUT Speech@FIT and Fluid Inference. Read

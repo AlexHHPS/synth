@@ -1,26 +1,11 @@
-# Legacy Backend API Archive
+# Archived upstream API
 
-This document previously described the Python/FastAPI API used by older
-Meetily backend releases.
+This directory retains the old Meetily Python/FastAPI and whisper-server implementation
+for historical reference. Its scripts can reference old product paths and upstream
+downloads. Do not run them against Synth or another installed app.
 
-## Current Supported API Surface
-
-Meetily no longer supports the standalone FastAPI backend as the active
-application API. The supported application is the Tauri desktop app, where the
-Next.js UI communicates with the Rust core through Tauri commands and events.
-
-Use these docs for the supported architecture and build flow:
-
-- [Top-level README](../README.md)
-- [Building from Source](../docs/BUILDING.md)
-- [Architecture](../docs/architecture.md)
-
-## Security and Support Notice
-
-The archived FastAPI API was unauthenticated and had development-oriented CORS
-behavior. It must not be treated as a supported production API or used as the
-basis for new deployments.
-
-This file is retained only to explain why older references may exist in the
-repository and to support migration research for users coming from legacy
-installations.
+Synth uses the independent service in `synth/server`, worker in `synth/worker` and
+deployment configuration in `synth/deploy`.
+See [architecture](../docs/synth/architecture.md), [installation](../docs/synth/installation.md)
+and [REST/MCP](../docs/synth/integrations.md).
+The archive is not included in Synth's container image or acoustic package.

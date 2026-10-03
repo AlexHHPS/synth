@@ -6,6 +6,7 @@ import Image from 'next/image';
 import { LogOut, ShieldCheck } from 'lucide-react';
 import { Button } from './design-system/button';
 import { pipelineRequest, message } from './api';
+import Info from '@/components/Info';
 
 interface Session { mode: 'keys' | 'supabase'; signed_in: boolean; email?: string; allowed_domains?: string[]; flow_state?: string; error_code?: string }
 
@@ -46,6 +47,7 @@ export function CorporateSession({ children }: { children: React.ReactNode }) {
     {session?.flow_state==='failed'&&<div className="voice-alert" role="alert">No se pudo completar el acceso. Comprueba que has elegido tu cuenta corporativa y vuelve a intentarlo.</div>}
     {session?<Button loading={busy} onClick={login}>Continuar con Google</Button>:<Button loading={busy} onClick={refresh}>Comprobar conexión</Button>}
     {session?.flow_state==='waiting'&&<p>Completa el acceso en tu navegador. Esta ventana continuará automáticamente.</p>}
+    <div className="mt-4"><Info isCollapsed={false} /></div>
     <p className="voice-login-footnote">El audio se procesa en tu Mac. Tus reuniones son privadas hasta que las compartas.</p>
   </div></div>;
 }

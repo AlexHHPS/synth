@@ -2,11 +2,11 @@
 """
 Meeting Transcript Database Injector
 
-Injects CSV-based transcript data into the Meetily SQLite database,
+Injects CSV-based transcript data into the legacy desktop SQLite database,
 creating meeting entries identical to those from normal recordings.
 
 Usage:
-    python inject_transcript.py --csv transcript.csv --title "Test Meeting"
+    python inject_transcript.py --csv transcript.csv --db /path/to/copy.sqlite --title "Test Meeting"
     python inject_transcript.py --csv transcript.csv --db /path/to/db.sqlite
 
 CSV Format (minimal - text column only):
@@ -17,31 +17,11 @@ CSV Format (minimal - text column only):
 
 import argparse
 import csv
-import os
-import platform
 import sqlite3
 import sys
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-
-
-def get_default_db_path() -> Path:
-    """Get the default database path based on the platform."""
-    system = platform.system()
-
-    if system == "Darwin":  # macOS
-        base_path = Path.home() / "Library" / "Application Support" / "Meetily"
-    elif system == "Windows":
-        appdata = os.environ.get("APPDATA", "")
-        if appdata:
-            base_path = Path(appdata) / "Meetily"
-        else:
-            base_path = Path.home() / "AppData" / "Roaming" / "Meetily"
-    else:  # Linux and others
-        base_path = Path.home() / ".config" / "Meetily"
-
-    return base_path / "meeting_minutes.sqlite"
 
 
 def estimate_duration(text: str) -> float:
@@ -227,7 +207,7 @@ def verify_injection(db_path: str, meeting_id: str) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Inject CSV transcript data into Meetily database",
+        description="Inject CSV fixtures into a legacy desktop database",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 CSV Format (minimal - just 'text' column required):
@@ -236,7 +216,7 @@ CSV Format (minimal - just 'text' column required):
   "First item on the agenda is the Q1 roadmap."
 
 Example usage:
-  python inject_transcript.py --csv transcript.csv --title "Team Standup"
+  python inject_transcript.py --csv transcript.csv --db /path/to/copy.sqlite --title "Team Standup"
   python inject_transcript.py --csv data.csv --db ~/custom/path.sqlite
         """
     )
@@ -249,8 +229,8 @@ Example usage:
 
     parser.add_argument(
         '--db', '-d',
-        default=None,
-        help='Database path (auto-detects platform default if not specified)'
+        required=True,
+        help='Explicit path to a disposable legacy SQLite database copy'
     )
 
     parser.add_argument(
@@ -274,14 +254,11 @@ Example usage:
     args = parser.parse_args()
 
     # Resolve database path
-    if args.db:
-        db_path = Path(args.db)
-    else:
-        db_path = get_default_db_path()
+    db_path = Path(args.db)
 
     if not db_path.exists():
         print(f"Error: Database not found at {db_path}", file=sys.stderr)
-        print("Make sure Meetily has been run at least once to create the database.", file=sys.stderr)
+        print("The selected legacy database must already exist.", file=sys.stderr)
         sys.exit(1)
 
     # Resolve CSV path
@@ -344,7 +321,7 @@ Example usage:
     except Exception as e:
         print(f"Warning: Verification failed: {e}", file=sys.stderr)
 
-    print("\nThe meeting should now appear in the Meetily sidebar.")
+    print("\nThe fixture was inserted into the selected legacy database; it is not part of the central library.")
 
 
 if __name__ == "__main__":

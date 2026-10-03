@@ -7,6 +7,7 @@ import re
 import sys
 import shutil
 import subprocess
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -20,6 +21,9 @@ parser.add_argument('--accent', default='221 83% 53%')
 parser.add_argument('--logo', default='/synth-mark.png')
 parser.add_argument('--api-url', default='http://127.0.0.1:18280')
 parser.add_argument('--supabase-url', default='')
+parser.add_argument('--source-url', default='https://github.com/AlexHHPS/synth')
+parser.add_argument('--documentation-url', default='https://github.com/AlexHHPS/synth/blob/main/README.md')
+parser.add_argument('--support-url', default='https://github.com/AlexHHPS/synth/issues')
 parser.add_argument('--generate-icons', action='store_true', help='Generate native icons and favicon from the supplied logo')
 args = parser.parse_args()
 if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}', args.name):
@@ -30,6 +34,10 @@ if not re.fullmatch(r'\d{1,3} \d{1,3}% \d{1,3}%', args.accent):
     parser.error('Accent must be an HSL triplet, for example 221 83% 53%.')
 if not args.logo.startswith('/') or '..' in args.logo or not (ROOT/'frontend/public'/args.logo[1:]).is_file():
     parser.error('Logo must name an existing file in frontend/public.')
+for link in [args.source_url, args.documentation_url, args.support_url]:
+    parsed = urlsplit(link)
+    if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        parser.error('Product links must be HTTPS URLs without credentials, query or fragment.')
 api = origin(args.api_url, loopback=True)
 supabase = origin(args.supabase_url) if args.supabase_url else ''
 if supabase and not re.fullmatch(r'https://[a-z0-9]+\.supabase\.co', supabase):
@@ -56,7 +64,8 @@ for directory in ['synth', 'frontend/src-tauri/src']:
         updated = text.replace(old['identifier'], args.identifier)
         if updated != text: path.write_text(updated)
 brand = {'name': args.name, 'tagline': args.tagline, 'identifier': args.identifier,
-         'accent': args.accent, 'logo': args.logo}
+         'accent': args.accent, 'logo': args.logo, 'source_url': args.source_url,
+         'documentation_url': args.documentation_url, 'support_url': args.support_url}
 (ROOT/'branding.json').write_text(json.dumps(brand, indent=2)+'\n')
 config_path = ROOT/'frontend/src-tauri/tauri.conf.json'
 config = json.loads(config_path.read_text())

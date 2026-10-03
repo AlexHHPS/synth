@@ -1,31 +1,11 @@
-# Legacy Backend Archive
+# Archived upstream backend
 
-This directory contains the archived Python/FastAPI, Docker, and standalone
-whisper-server backend implementation from older Meetily releases.
+This directory retains the old Meetily Python/FastAPI and whisper-server implementation
+for historical reference. Its scripts can reference old product paths and upstream
+downloads. Do not run them against Synth or another installed app.
 
-## Current Supported Architecture
-
-Meetily no longer uses this backend as the supported application path. The
-current app is a self-contained Tauri desktop application:
-
-- Next.js provides the desktop UI from `frontend/src`.
-- Rust/Tauri provides the local backend and native integration from
-  `frontend/src-tauri`.
-- Local transcription, meeting storage, and summary workflows are handled by
-  the bundled desktop app rather than a separate FastAPI service.
-
-Use these docs for supported setup and development:
-
-- [Top-level README](../README.md)
-- [Building from Source](../docs/BUILDING.md)
-- [Architecture](../docs/architecture.md)
-
-## Status of This Directory
-
-The files under `backend/` are retained only for historical reference and
-legacy migration context. They should not be used for new installs, production
-deployments, security assessments of the supported app, or contributor setup.
-
-The old FastAPI service, Docker compose flow, standalone whisper-server flow,
-and related scripts are unsupported. The old unauthenticated FastAPI/CORS
-behavior must not be treated as a supported production API.
+Synth uses the independent service in `synth/server`, worker in `synth/worker` and
+deployment configuration in `synth/deploy`.
+See [architecture](../docs/synth/architecture.md), [installation](../docs/synth/installation.md)
+and [REST/MCP](../docs/synth/integrations.md).
+The archive is not included in Synth's container image or acoustic package.

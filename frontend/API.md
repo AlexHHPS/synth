@@ -1,23 +1,10 @@
-# Legacy Whisper Server API Archive
+# Synth integration surfaces
 
-This document previously described the standalone whisper-server HTTP API used
-by older Meetily development flows.
+The public API is the central authenticated library, not the archived whisper-server.
+Use [REST and MCP](../docs/synth/integrations.md) for endpoints, scopes and client setup.
+The Mac acoustic host exposes a loopback control bridge for the native application;
+it is not the integration endpoint for other products.
 
-## Current Supported Integration
-
-The supported Meetily app no longer requires a manually started whisper-server
-HTTP service. The Next.js UI communicates with the Rust/Tauri core through
-Tauri commands and events, and local transcription is handled inside the
-desktop application.
-
-Use these docs for current development:
-
-- [Frontend README](README.md)
-- [Building from Source](../docs/BUILDING.md)
-- [Architecture](../docs/architecture.md)
-
-## Archived Status
-
-The old whisper-server API is retained only as historical context for older
-branches or migration research. It is not a supported public API for current
-Meetily releases.
+The UI uses Tauri commands for native capture and the credential bridge. The older
+Meetily whisper-server protocol remains under `backend/` for historical research.
+It is not deployed or packaged as part of Synth.

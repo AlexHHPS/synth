@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Runtime};
 use tauri_plugin_store::StoreExt;
-use log::{info, warn, error};
+use log::{info, warn};
 use anyhow::Result;
 
 use crate::state::AppState;
@@ -168,39 +168,31 @@ pub async fn reset_onboarding_status_cmd<R: Runtime>(
 }
 
 #[tauri::command]
+pub async fn configure_synth_pipeline(
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let pool = state.db_manager.pool();
+    SettingsRepository::save_model_config(
+        pool, "synth-pipeline", "local-combo", "large-v3-turbo-q5_0", None,
+    ).await.map_err(|_| "No se pudo configurar el servicio de actas.".to_string())?;
+    SettingsRepository::save_transcript_config(
+        pool, "localWhisper", "large-v3-turbo-q5_0",
+    ).await.map_err(|_| "No se pudo configurar Whisper local.".to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn complete_onboarding<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<'_, AppState>,
     model: String,
 ) -> Result<(), String> {
-    info!("Completing onboarding with builtin-ai model: {}", model);
-
-    // Step 1: Save model configuration to SQLite database FIRST
-    let pool = state.db_manager.pool();
-
-    // Onboarding always uses builtin-ai (local LLM)
-    if let Err(e) = SettingsRepository::save_model_config(
-        pool,
-        "builtin-ai",
-        &model,
-        "large-v3",
-        None,
-    ).await {
-        error!("Failed to save builtin-ai model config: {}", e);
-        return Err(format!("Failed to save builtin-ai model config: {}", e));
+    if model != "local-combo" {
+        return Err("Las actas del piloto usan OmniRoute local-combo.".to_string());
     }
-    info!("Saved builtin-ai model config: model={}", model);
+    info!("Completing Synth onboarding with the Synth document pipeline");
 
-    // Save transcription model config (parakeet provider) - always parakeet
-    if let Err(e) = SettingsRepository::save_transcript_config(
-        pool,
-        "parakeet",
-        crate::config::DEFAULT_PARAKEET_MODEL,
-    ).await {
-        error!("Failed to save transcription model config: {}", e);
-        return Err(format!("Failed to save transcription model config: {}", e));
-    }
-    info!("Saved transcription model config: provider=parakeet, model={}", crate::config::DEFAULT_PARAKEET_MODEL);
+    configure_synth_pipeline(state).await?;
 
     // Step 2: Only NOW mark onboarding as complete (after DB operations succeed)
     let mut status = load_onboarding_status(&app)
@@ -210,7 +202,7 @@ pub async fn complete_onboarding<R: Runtime>(
     status.completed = true;
     status.current_step = 4; // Max step (4 on macOS with permissions, 3 on other platforms)
     status.model_status.parakeet = "downloaded".to_string();
-    status.model_status.summary = "downloaded".to_string();
+    status.model_status.summary = "omniroute-configured".to_string();
     status.model_status.selected_summary_model = Some(model.clone());
 
     save_onboarding_status(&app, &status)

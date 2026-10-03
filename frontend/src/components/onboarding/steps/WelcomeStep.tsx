@@ -10,22 +10,22 @@ export function WelcomeStep() {
   const features = [
     {
       icon: Lock,
-      title: 'Your data never leaves your device',
+      title: 'Audio y perfiles de voz en tu Mac',
     },
     {
       icon: Sparkles,
-      title: 'Intelligent summaries & insights',
+      title: 'Actas con decisiones, tareas y referencias',
     },
     {
       icon: Cpu,
-      title: 'Works offline, no cloud required',
+      title: 'Transcripción local y actas con OmniRoute',
     },
   ];
 
   return (
     <OnboardingContainer
-      title="Welcome to Meetily"
-      description="Record. Transcribe. Summarize. All on your device."
+      title="Synth"
+      description="Graba reuniones, revisa lo que se dijo y comparte el acta."
       step={1}
       hideProgress={true}
     >
@@ -56,9 +56,9 @@ export function WelcomeStep() {
             onClick={goNext}
             className="w-full h-11 bg-gray-900 hover:bg-gray-800 text-white"
           >
-            Get Started
+            Empezar
           </Button>
-          <p className="text-xs text-center text-gray-500">Takes less than 3 minutes</p>
+          <p className="text-xs text-center text-gray-500">La transcripción puede enviarse al servicio de actas configurado por Synth.</p>
         </div>
       </div>
     </OnboardingContainer>

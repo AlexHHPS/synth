@@ -50,10 +50,14 @@ pub mod groq;
 pub mod openrouter;
 pub mod parakeet_engine;
 pub mod state;
+pub mod synth_desktop;
+pub mod meeting_detection;
+pub mod voice_onboarding;
 pub mod summary;
 pub mod tray;
 pub mod utils;
 pub mod whisper_engine;
+mod bundled_model;
 
 use audio::{list_audio_devices, AudioDevice, trigger_audio_permission};
 use log::{error as log_error, info as log_info};
@@ -277,31 +281,14 @@ fn get_transcription_status() -> TranscriptionStatus {
 }
 
 #[tauri::command]
-fn read_audio_file(file_path: String) -> Result<Vec<u8>, String> {
-    match std::fs::read(&file_path) {
+fn read_audio_file(app: AppHandle, file_path: String) -> Result<Vec<u8>, String> {
+    let root = app.path().app_data_dir().map_err(|_| "No se encuentra la carpeta de audio local.")?
+        .join("capture").join("raw");
+    let path = synth_desktop::playback_path(&root, std::path::Path::new(&file_path))?;
+    match std::fs::read(path) {
         Ok(data) => Ok(data),
         Err(e) => Err(format!("Failed to read audio file: {}", e)),
     }
-}
-
-#[tauri::command]
-async fn save_transcript(file_path: String, content: String) -> Result<(), String> {
-    log_info!("Saving transcript to: {}", file_path);
-
-    // Ensure parent directory exists
-    if let Some(parent) = std::path::Path::new(&file_path).parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create directory: {}", e))?;
-        }
-    }
-
-    // Write content to file
-    std::fs::write(&file_path, content)
-        .map_err(|e| format!("Failed to write transcript: {}", e))?;
-
-    log_info!("Transcript saved successfully");
-    Ok(())
 }
 
 // Audio level monitoring commands
@@ -466,15 +453,21 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(whisper_engine::parallel_commands::ParallelProcessorState::new())
         .manage(Arc::new(RwLock::new(
             None::<notifications::manager::NotificationManager<tauri::Wry>>,
         )) as NotificationManagerState<tauri::Wry>)
         .manage(audio::init_system_audio_state())
+        .manage(meeting_detection::DetectionState::default())
         .manage(summary::summary_engine::ModelManagerState(Arc::new(tokio::sync::Mutex::new(None))))
         .setup(|_app| {
+            if let Ok(resources) = _app.path().resource_dir() {
+                let host = resources.join("synth-host/synth-voice-host");
+                if host.is_file() {
+                    let _ = std::process::Command::new(host).arg("--install-agent").spawn();
+                }
+            }
             #[cfg(target_os = "windows")]
             match _app.path().resolve(
                 "onnxruntime.dll",
@@ -504,6 +497,7 @@ pub fn run() {
                 )),
             };
 
+            meeting_detection::start(_app.handle().clone());
             log::info!("Application setup complete");
 
             // Initialize system tray
@@ -610,12 +604,18 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            voice_onboarding::synth_voice_record,
+            voice_onboarding::synth_voice_cancel,
+            voice_onboarding::synth_voice_discard,
+            voice_onboarding::synth_voice_recording_active,
+            meeting_detection::synth_detection_status,
+            meeting_detection::synth_detection_settings,
+            meeting_detection::synth_detection_action,
             start_recording,
             stop_recording,
             is_recording,
             get_transcription_status,
             read_audio_file,
-            save_transcript,
             analytics::commands::init_analytics,
             analytics::commands::disable_analytics,
             analytics::commands::track_event,
@@ -817,6 +817,10 @@ pub fn run() {
             onboarding::save_onboarding_status_cmd,
             onboarding::reset_onboarding_status_cmd,
             onboarding::complete_onboarding,
+            onboarding::configure_synth_pipeline,
+            synth_desktop::synth_desktop_request,
+            synth_desktop::synth_pipeline_request,
+            synth_desktop::synth_enqueue_capture,
             // System settings commands
             #[cfg(target_os = "macos")]
             utils::open_system_settings,

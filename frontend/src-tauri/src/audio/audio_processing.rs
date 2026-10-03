@@ -39,11 +39,17 @@ pub fn create_meeting_folder(
 ) -> Result<PathBuf> {
     let timestamp = Utc::now().format("%Y-%m-%d_%H-%M").to_string();
     let sanitized_name = sanitize_filename(meeting_name);
-    let folder_name = format!("{}_{}", sanitized_name, timestamp);
+    // A user can record two meetings with the same title within one minute.
+    // Each capture owns a new directory; existing recordings are never reused.
+    let folder_name = format!("{}_{}_{}", sanitized_name, timestamp, uuid::Uuid::new_v4().simple());
     let meeting_folder = base_path.join(folder_name);
 
     // Create main meeting folder
     std::fs::create_dir_all(&meeting_folder)?;
+    #[cfg(unix)] {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&meeting_folder, std::fs::Permissions::from_mode(0o700))?;
+    }
 
     // Only create .checkpoints subdirectory if requested (when auto_save is true)
     if create_checkpoints_dir {

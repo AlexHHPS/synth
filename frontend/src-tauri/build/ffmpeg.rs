@@ -43,6 +43,10 @@ pub fn ensure_ffmpeg_binary() {
             .expect("Failed to create binaries directory");
     }
 
+    if target == "aarch64-apple-darwin" {
+        panic!("Build the pinned audio-only sidecar with synth/scripts/prepare-ffmpeg.py first");
+    }
+
     // Download and extract
     match download_and_extract_ffmpeg(&target, &binary_path) {
         Ok(()) => {

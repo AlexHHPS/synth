@@ -2786,12 +2786,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "http-range"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21dec9db110f5f872ed9699c3ecf50cf16f423502706ba5c72462e28d3157573"
-
-[[package]]
 name = "httparse"
 version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3607,83 +3601,6 @@ checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
 dependencies = [
  "cfg-if",
  "digest",
-]
-
-[[package]]
-name = "meetily"
-version = "0.4.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "bytemuck",
- "bytes",
- "chrono",
- "cidre",
- "clap 4.6.1",
- "core-graphics 0.23.2",
- "cpal",
- "criterion",
- "crossbeam",
- "dashmap",
- "dasp",
- "dirs 5.0.1",
- "ebur128",
- "env_logger",
- "esaxx-rs",
- "ffmpeg-sidecar",
- "futures",
- "futures-channel",
- "futures-util",
- "infer 0.15.0",
- "lazy_static",
- "log",
- "memory-stats",
- "ndarray",
- "nnnoiseless",
- "objc",
- "once_cell",
- "ort",
- "posthog-rs",
- "rand 0.8.6",
- "rayon",
- "realfft",
- "regex",
- "reqwest 0.11.27",
- "ringbuf",
- "rubato 0.15.0",
- "serde",
- "serde_json",
- "sha2",
- "silero",
- "sqlx",
- "strsim 0.10.0",
- "symphonia",
- "sysinfo",
- "tar",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-fs",
- "tauri-plugin-log",
- "tauri-plugin-notification",
- "tauri-plugin-process",
- "tauri-plugin-single-instance",
- "tauri-plugin-store",
- "tauri-plugin-updater",
- "tempfile",
- "thiserror 2.0.18",
- "time",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
- "whatlang",
- "which 6.0.3",
- "whisper-rs",
- "xz2",
- "zip 2.4.2",
 ]
 
 [[package]]
@@ -6496,6 +6413,83 @@ dependencies = [
 ]
 
 [[package]]
+name = "synth"
+version = "0.4.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytemuck",
+ "bytes",
+ "chrono",
+ "cidre",
+ "clap 4.6.1",
+ "core-graphics 0.23.2",
+ "cpal",
+ "criterion",
+ "crossbeam",
+ "dashmap",
+ "dasp",
+ "dirs 5.0.1",
+ "ebur128",
+ "env_logger",
+ "esaxx-rs",
+ "ffmpeg-sidecar",
+ "futures",
+ "futures-channel",
+ "futures-util",
+ "infer 0.15.0",
+ "lazy_static",
+ "log",
+ "memory-stats",
+ "ndarray",
+ "nnnoiseless",
+ "objc",
+ "once_cell",
+ "ort",
+ "posthog-rs",
+ "rand 0.8.6",
+ "rayon",
+ "realfft",
+ "regex",
+ "reqwest 0.11.27",
+ "ringbuf",
+ "rubato 0.15.0",
+ "serde",
+ "serde_json",
+ "sha2",
+ "silero",
+ "sqlx",
+ "strsim 0.10.0",
+ "symphonia",
+ "sysinfo",
+ "tar",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-fs",
+ "tauri-plugin-log",
+ "tauri-plugin-notification",
+ "tauri-plugin-process",
+ "tauri-plugin-single-instance",
+ "tauri-plugin-store",
+ "tauri-plugin-updater",
+ "tempfile",
+ "thiserror 2.0.18",
+ "time",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "whatlang",
+ "which 6.0.3",
+ "whisper-rs",
+ "xz2",
+ "zip 2.4.2",
+]
+
+[[package]]
 name = "sysinfo"
 version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6634,7 +6628,6 @@ dependencies = [
  "gtk",
  "heck 0.5.0",
  "http 1.4.0",
- "http-range",
  "jni 0.21.1",
  "libc",
  "log",

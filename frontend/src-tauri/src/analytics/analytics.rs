@@ -45,7 +45,7 @@ impl Default for AnalyticsConfig {
     fn default() -> Self {
         Self {
             api_key: String::new(),
-            host: Some("https://us.i.posthog.com".to_string()),
+            host: None,
             enabled: false,
         }
     }
@@ -83,7 +83,11 @@ pub struct AnalyticsClient {
 }
 
 impl AnalyticsClient {
-    pub async fn new(config: AnalyticsConfig) -> Self {
+    pub async fn new(mut config: AnalyticsConfig) -> Self {
+        // Hard disable, including saved preferences or future command callers.
+        config.enabled = false;
+        config.api_key.clear();
+        config.host = None;
         let client = if config.enabled && !config.api_key.is_empty() {
             Some(Arc::new(posthog_rs::client(config.api_key.as_str()).await))
         } else {

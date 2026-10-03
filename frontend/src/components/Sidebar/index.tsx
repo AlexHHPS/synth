@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload } from 'lucide-react';
+import { ChevronDown, ChevronRight, File, Folder, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useSidebar } from './SidebarProvider';
 import type { CurrentMeeting } from '@/components/Sidebar/SidebarProvider';
@@ -690,7 +690,7 @@ const Sidebar: React.FC = () => {
             {!isCollapsed && (
               <div className="p-3">
                 {/* <span className="text-lg text-center border rounded-full bg-blue-50 border-white font-semibold text-gray-700 mb-2 block items-center">
-                  <span>Meetily</span>
+                  <span>Synth</span>
                 </span> */}
                 <Logo isCollapsed={isCollapsed} />
 
@@ -722,6 +722,15 @@ const Sidebar: React.FC = () => {
         <div className="flex-1 flex flex-col min-h-0">
           {/* Fixed navigation items */}
           <div className="flex-shrink-0">
+            <button
+              type="button"
+              onClick={() => router.push('/voice')}
+              className="flex w-[calc(100%-1.5rem)] items-center gap-2 mx-3 mt-3 rounded p-3 text-sm font-medium hover:bg-gray-100"
+              title="Biblioteca de Synth"
+            >
+              <Folder className="h-4 w-4" />
+              {!isCollapsed && <span>Biblioteca de Synth</span>}
+            </button>
             {!isCollapsed && (
               <div
                 onClick={() => router.push('/')}

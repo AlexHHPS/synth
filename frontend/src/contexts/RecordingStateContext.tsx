@@ -167,7 +167,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
           setState(prev => {
             // Set status to STOPPING if not already in stop flow
             // This ensures smooth UI transition for tray/keyboard stops
-            const newStatus = [
+            const newStatus = payload.save_status === 'failed' ? RecordingStatus.ERROR : [
               RecordingStatus.STOPPING,
               RecordingStatus.PROCESSING_TRANSCRIPTS,
               RecordingStatus.SAVING
@@ -178,7 +178,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
             return {
               ...prev,
               status: newStatus,
-              statusMessage: newStatus === RecordingStatus.STOPPING ? 'Stopping recording...' : prev.statusMessage,
+              statusMessage: payload.save_status === 'failed' ? payload.message : newStatus === RecordingStatus.STOPPING ? 'Stopping recording...' : prev.statusMessage,
               isRecording: false,
               isPaused: false,
               isActive: false,

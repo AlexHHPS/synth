@@ -77,3 +77,9 @@ experiments/
 target/
 
 frontend/src-tauri/binaries/
+
+# Synth local pilot: runtime data, secrets and isolated tools never enter source control.
+synth/.runtime/
+synth/.toolchains/
+synth/**/.venv/
+__pycache__/

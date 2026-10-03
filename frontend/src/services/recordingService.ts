@@ -20,6 +20,8 @@ export interface RecordingStoppedPayload {
   message: string;
   folder_path?: string;
   meeting_name?: string;
+  audio_file?: string;
+  save_status?: 'saved' | 'failed' | 'audio_disabled';
 }
 
 // Bound the start invoke: > ~40s Bluetooth mic cold-start and ~90s worst-case

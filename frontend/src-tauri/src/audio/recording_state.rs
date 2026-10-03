@@ -103,6 +103,7 @@ pub struct RecordingState {
 
     // Audio pipeline
     audio_sender: Mutex<Option<mpsc::UnboundedSender<AudioChunk>>>,
+    source_tap: Mutex<Option<super::source_archive::SourceTap>>,
 
     // Memory optimization
     buffer_pool: AudioBufferPool,
@@ -131,6 +132,7 @@ impl RecordingState {
             microphone_device: Mutex::new(None),
             system_device: Mutex::new(None),
             audio_sender: Mutex::new(None),
+            source_tap: Mutex::new(None),
             buffer_pool: AudioBufferPool::new(16, 48000), // Pool of 16 buffers with 48kHz samples capacity
             error_count: AtomicU32::new(0),
             recoverable_error_count: AtomicU32::new(0),
@@ -241,6 +243,10 @@ impl RecordingState {
             return Ok(()); // Silently discard chunks while paused
         }
 
+        if let Some(tap) = self.source_tap.lock().unwrap().as_ref() {
+            tap.push(&chunk)?;
+        }
+
         if let Some(sender) = self.audio_sender.lock().unwrap().as_ref() {
             sender.send(chunk).map_err(|_| anyhow::anyhow!("Failed to send audio chunk"))?;
 
@@ -253,6 +259,14 @@ impl RecordingState {
             // Return an error when no sender is available (pipeline not ready)
             Err(anyhow::anyhow!("Audio pipeline not ready - no sender available"))
         }
+    }
+
+    pub fn set_source_tap(&self, tap: super::source_archive::SourceTap) {
+        *self.source_tap.lock().unwrap() = Some(tap);
+    }
+
+    pub fn detach_source_tap(&self) {
+        *self.source_tap.lock().unwrap() = None;
     }
 
     // Error handling
@@ -393,6 +407,7 @@ impl Default for RecordingState {
             microphone_device: Mutex::new(None),
             system_device: Mutex::new(None),
             audio_sender: Mutex::new(None),
+            source_tap: Mutex::new(None),
             buffer_pool: AudioBufferPool::new(16, 48000), // Pool of 16 buffers with 48kHz samples capacity
             error_count: AtomicU32::new(0),
             recoverable_error_count: AtomicU32::new(0),

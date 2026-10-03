@@ -15,7 +15,7 @@ import {
 import { toast } from 'sonner';
 
 const TRANSCRIPTION_RUNTIME_START_ERROR_CODE = 'TRANSCRIPTION_RUNTIME_INITIALIZATION_FAILED';
-const TRANSCRIPTION_RUNTIME_USER_MESSAGE = 'Speech recognition could not initialize. Restart Meetily. If the problem continues, repair or reinstall the app.';
+const TRANSCRIPTION_RUNTIME_USER_MESSAGE = 'No se pudo iniciar el reconocimiento de voz. Reinicia Synth. Si persiste, repara o reinstala la app.';
 
 const isTranscriptionRuntimeStartError = (error: unknown) =>
   String(error) === TRANSCRIPTION_RUNTIME_START_ERROR_CODE;
@@ -150,6 +150,8 @@ export function useRecordingStart(
       console.log('Selected transcription model ready - setting up meeting title and state');
 
       const randomTitle = generateMeetingTitle();
+      localStorage.setItem('synth_voice_capture_mode', 'legacy');
+      localStorage.removeItem('synth_voice_capture_options');
       setMeetingTitle(randomTitle);
 
       // Set STARTING status before initiating backend recording

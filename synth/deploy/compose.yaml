@@ -1,0 +1,121 @@
+name: synth-meetings-local
+services:
+  document-worker:
+    build:
+      context: ../..
+      dockerfile: synth/deploy/Dockerfile
+    command: [python, -m, synth.worker.main]
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      OMNIROUTE_URL: ${OMNIROUTE_URL:-http://host.docker.internal:20128/v1}
+      OMNIROUTE_COMBO: ${OMNIROUTE_COMBO:-local-combo}
+      OMNIROUTE_API_KEY_FILE: /run/secrets/omniroute_api_key
+    secrets:
+      - postgres_password
+      - omniroute_api_key
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - private
+      - frontend
+    mem_limit: 1g
+  omniroute:
+    profiles: [local-llm-research]
+    build:
+      context: ../..
+      dockerfile: synth/deploy/Dockerfile.omniroute
+    restart: unless-stopped
+    volumes:
+      - omniroute-data:/app/data
+    secrets:
+      - omniroute_password
+    networks:
+      - private
+    mem_limit: 3g
+  local-bridge:
+    profiles: [local-llm-research]
+    build:
+      context: ../..
+      dockerfile: synth/deploy/Dockerfile
+    command: [python, -m, synth.server.local_bridge]
+    restart: unless-stopped
+    secrets:
+      - native_llm_key
+    ports:
+      - '127.0.0.1:20129:20129'
+    networks:
+      - private
+      - frontend
+    mem_limit: 256m
+  api:
+    build:
+      context: ../..
+      dockerfile: synth/deploy/Dockerfile
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      BOOTSTRAP_ADMIN_KEY_FILE: /run/secrets/bootstrap_admin_key
+      VOICE_PROFILE_ENCRYPTION_KEY_FILE: /run/secrets/voice_profile_encryption_key
+      BUILD_FINGERPRINT: ${BUILD_FINGERPRINT:-development}
+    secrets:
+      - postgres_password
+      - bootstrap_admin_key
+      - voice_profile_encryption_key
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - '127.0.0.1:18280:18280'
+    networks:
+      - private
+      - frontend
+    mem_limit: 1g
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18280/health', timeout=3)"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+  postgres:
+    image: postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: synth
+      POSTGRES_DB: synth_meetings
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ../server/schema.sql:/docker-entrypoint-initdb.d/001-library.sql:ro
+    networks:
+      - private
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U synth -d synth_meetings']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    mem_limit: 1g
+networks:
+  frontend:
+  private:
+    internal: true
+volumes:
+  omniroute-data:
+  postgres-data:
+secrets:
+  omniroute_api_key:
+    file: ../.runtime/secrets/omniroute_api_key
+  omniroute_password:
+    file: ../.runtime/secrets/omniroute_password
+  native_llm_key:
+    file: ../.runtime/secrets/native_llm_key
+  bootstrap_admin_key:
+    file: ../.runtime/secrets/bootstrap_admin_key
+  postgres_password:
+    file: ../.runtime/secrets/postgres_password
+  voice_profile_encryption_key:
+    file: ../.runtime/secrets/voice_profile_encryption_key

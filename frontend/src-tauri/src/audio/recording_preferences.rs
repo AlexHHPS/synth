@@ -56,15 +56,12 @@ pub fn get_default_recordings_folder() -> PathBuf {
 
     #[cfg(target_os = "macos")]
     {
-        // macOS: ~/Movies/meetily-recordings
-        if let Some(movies_dir) = dirs::video_dir() {
-            movies_dir.join("meetily-recordings")
-        } else {
-            // Fallback to Documents if Movies folder is not available
-            dirs::document_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("meetily-recordings")
-        }
+        // Keep temporary audio in this fork's namespace, separate from upstream Meetily.
+        dirs::data_local_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("dev.synth.voice")
+            .join("capture")
+            .join("raw")
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -384,4 +381,3 @@ pub async fn get_audio_backend_info() -> Result<Vec<BackendInfo>, String> {
         }])
     }
 }
-

@@ -308,6 +308,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     app: AppHandle<R>,
     meeting_name: Option<String>,
 ) -> Result<(), String> {
+    if crate::voice_onboarding::active() { return Err("Termina el onboarding de voz antes de grabar una reunión.".into()); }
     info!(
         "Starting recording with default devices, meeting: {:?}",
         meeting_name
@@ -498,6 +499,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     system_device_name: Option<String>,
     meeting_name: Option<String>,
 ) -> Result<(), String> {
+    if crate::voice_onboarding::active() { return Err("Termina el onboarding de voz antes de grabar una reunión.".into()); }
     info!(
         "Starting recording with specific devices: mic={:?}, system={:?}, meeting={:?}",
         mic_device_name, system_device_name, meeting_name
@@ -1013,43 +1015,50 @@ pub async fn stop_recording<R: Runtime>(
     );
 
     // Perform final cleanup with the manager if available
-    let (meeting_folder, meeting_name) = if let Some(mut manager) = manager_for_cleanup {
+    let (meeting_folder, meeting_name, audio_file, save_error) = if let Some(mut manager) = manager_for_cleanup {
         info!("🧹 Performing final cleanup and saving recording data");
 
         // Extract meeting info BEFORE async operations
         let meeting_folder = manager.get_meeting_folder();
         let meeting_name = manager.get_meeting_name();
 
-        match tokio::time::timeout(
+        let (audio_file, save_error) = match tokio::time::timeout(
             tokio::time::Duration::from_secs(300), // 5 minutes max for file I/O
             manager.save_recording_only(&app)
         ).await {
-            Ok(Ok(_)) => {
+            Ok(Ok(path)) => {
                 info!("✅ Recording data saved successfully during cleanup");
+                (path, None)
             }
             Ok(Err(e)) => {
                 warn!(
                     "⚠️ Error during recording cleanup (transcripts preserved): {}",
                     e
                 );
-                // Don't fail shutdown - transcripts are already preserved
+                (None, Some("No se pudo finalizar el audio de la reunión.".to_string()))
             }
             Err(_) => {
                 warn!("⏱️ File I/O timeout (5 minutes) reached during save, continuing shutdown");
-                // Don't fail shutdown - transcripts are already preserved
+                (None, Some("La escritura del audio no terminó dentro del plazo.".to_string()))
             }
-        }
+        };
 
-        (meeting_folder, meeting_name)
+        (meeting_folder, meeting_name, audio_file, save_error)
     } else {
         info!("ℹ️ No recording manager available for cleanup");
-        (None, None)
+        (None, None, None, Some("No se encontró la captura para finalizarla.".to_string()))
     };
 
     // Set recording flag to false
     info!("🔍 Setting IS_RECORDING to false");
     IS_RECORDING.store(false, Ordering::SeqCst);
     // IS_RECORDING_STOPPING is cleared by _stopping_guard on scope exit.
+    if let Some(error) = save_error {
+        let _ = app.emit("recording-save-failed", serde_json::json!({"message":error,"recoverable_folder":meeting_folder}));
+        let _ = app.emit("recording-stopped", serde_json::json!({"message":error,"save_status":"failed"}));
+        crate::tray::update_tray_menu(&app);
+        return Err(error);
+    }
 
     // Step 4.5: Prepare metadata for frontend (NO database save)
     // NOTE: We do NOT save to database here. The frontend will save after all transcripts are displayed.
@@ -1085,7 +1094,9 @@ pub async fn stop_recording<R: Runtime>(
         serde_json::json!({
             "message": "Recording stopped - frontend will save after all transcripts received",
             "folder_path": folder_path_str,
-            "meeting_name": meeting_name_str
+            "meeting_name": meeting_name_str,
+            "audio_file": audio_file,
+            "save_status": if audio_file.is_some() { "saved" } else { "audio_disabled" }
         }),
     )
     .map_err(|e| e.to_string())?;

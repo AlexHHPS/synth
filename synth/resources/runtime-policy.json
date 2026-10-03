@@ -1,0 +1,6 @@
+{
+  "id": "operator-configured-gateway-v1",
+  "audio_and_voice_profiles_local": true,
+  "local_llm_required": false,
+  "description": "Audio processing is local. Documents use the gateway chosen by the deployment operator."
+}

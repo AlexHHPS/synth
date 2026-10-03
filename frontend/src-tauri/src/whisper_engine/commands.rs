@@ -26,6 +26,14 @@ pub fn set_models_directory<R: Runtime>(app: &AppHandle<R>) {
         }
     }
 
+    if let Ok(resources) = app.path().resource_dir() {
+        let bundled = resources.join("synth-host/_internal/models/ggml-large-v3-turbo-q5_0.bin");
+        if bundled.is_file() {
+            if let Err(error) = crate::bundled_model::seed(&bundled, &models_dir.join("ggml-large-v3-turbo-q5_0.bin")) {
+                log::error!("Failed to prepare bundled transcription model: {}", error);
+            }
+        }
+    }
     log::info!("Models directory set to: {}", models_dir.display());
 
     let mut guard = MODELS_DIR.lock().unwrap();

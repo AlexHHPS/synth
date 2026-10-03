@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use anyhow::Result;
+use tauri::Emitter;
 use log::{debug, error, info, warn};
 #[cfg(target_os = "macos")]
 use std::time::Duration;
@@ -189,6 +190,7 @@ pub struct RecordingManager {
     stream_manager: AudioStreamManager,
     pipeline_manager: AudioPipelineManager,
     recording_saver: RecordingSaver,
+    source_archive: Option<super::source_archive::SourceArchive>,
     device_monitor: Option<AudioDeviceMonitor>,
     device_event_receiver: Option<mpsc::UnboundedReceiver<DeviceEvent>>,
 }
@@ -209,6 +211,7 @@ impl RecordingManager {
             stream_manager,
             pipeline_manager,
             recording_saver: RecordingSaver::new(),
+            source_archive: None,
             device_monitor: Some(device_monitor),
             device_event_receiver: Some(device_event_receiver),
         }
@@ -282,12 +285,37 @@ impl RecordingManager {
             system_device.as_ref().map(|d| d.name.clone())
         );
 
+        if auto_save {
+            let setup = (|| {
+                let folder = self.recording_saver.get_meeting_folder()
+                    .ok_or_else(|| anyhow::anyhow!("source_recording_folder_missing"))?;
+                super::source_archive::SourceArchive::start(folder,
+                    microphone_device.is_some(), system_device.is_some())
+            })();
+            match setup {
+                Ok((tap, archive)) => { self.state.set_source_tap(tap); self.source_archive = Some(archive); }
+                Err(error) => {
+                    self.state.stop_recording();
+                    let _ = self.pipeline_manager.stop().await;
+                    self.state.cleanup();
+                    return Err(error.into());
+                }
+            }
+        }
+
         // Give the pipeline a moment to fully initialize before starting streams
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // Start audio streams - they send RAW unmixed chunks to pipeline for mixing
         // Pipeline handles mixing and distribution to both recording and transcription
-        self.stream_manager.start_streams(microphone_device.clone(), system_device.clone(), None).await?;
+        if let Err(error) = self.stream_manager.start_streams(microphone_device.clone(), system_device.clone(), None).await {
+            self.state.stop_recording();
+            let _ = self.stream_manager.stop_streams();
+            self.state.detach_source_tap();
+            let _ = self.pipeline_manager.stop().await;
+            self.state.cleanup();
+            return Err(error.into());
+        }
 
         // Start device monitoring to detect disconnects
         if let Some(ref mut monitor) = self.device_monitor {
@@ -365,29 +393,26 @@ impl RecordingManager {
     }
 
     /// Save recording after transcription is complete
-    pub async fn save_recording_only<R: tauri::Runtime>(&mut self, app: &tauri::AppHandle<R>) -> Result<()> {
+    pub async fn save_recording_only<R: tauri::Runtime>(&mut self, app: &tauri::AppHandle<R>) -> Result<Option<String>> {
         debug!("Saving recording with transcript chunks");
 
         // Get actual recording duration from state
         let recording_duration = self.state.get_active_recording_duration();
         info!("Recording duration from state: {:?}s", recording_duration);
 
-        // Save the recording with actual duration
-        match self.recording_saver.stop_and_save(app, recording_duration).await {
-            Ok(Some(file_path)) => {
-                info!("Recording saved successfully to: {}", file_path);
-            }
-            Ok(None) => {
-                debug!("Recording not saved (auto-save disabled or no audio data)");
-            }
-            Err(e) => {
-                error!("Failed to save recording: {}", e);
-                // Don't fail the stop operation if saving fails
-            }
+        self.state.detach_source_tap();
+        let archive_result = if let Some(archive) = self.source_archive.take() {
+            tokio::task::spawn_blocking(move || archive.close()).await
+                .map_err(|_| anyhow::anyhow!("source_archive_join_failed"))
+                .and_then(|result| result).map(Some)
+        } else { Ok(None) };
+        // Finalize the mixed recovery file even when a source archive failed.
+        let audio_result = self.recording_saver.stop_and_save(app, recording_duration).await
+            .map_err(|error| anyhow::anyhow!(error));
+        if let Some(manifest) = archive_result? {
+            let _ = app.emit("source-archive-closed", manifest);
         }
-
-        debug!("Recording save operation completed");
-        Ok(())
+        audio_result
     }
 
     /// Stop recording and save audio (legacy method)

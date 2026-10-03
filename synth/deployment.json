@@ -1,0 +1,5 @@
+{
+  "api_url": "http://127.0.0.1:18280",
+  "auth_mode": "keys",
+  "supabase_url": ""
+}

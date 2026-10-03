@@ -3,6 +3,8 @@
 import React, { useEffect } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { useRecordingStop } from '@/hooks/useRecordingStop';
+import { CaptureHandoff } from '@/synth/CaptureHandoff';
+import { CAPTURE_MODE } from '@/synth/capture';
 
 /**
  * RecordingPostProcessingProvider
@@ -34,6 +36,7 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
       try {
         // Listen for recording-stop-complete event from Rust
         unlistenFn = await listen<boolean>('recording-stop-complete', (event) => {
+          if (localStorage.getItem(CAPTURE_MODE) === 'synth') return;
           console.log('[RecordingPostProcessing] Received recording-stop-complete event:', event.payload);
 
           // Call the post-processing handler
@@ -57,5 +60,5 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
     };
   }, [handleRecordingStop]);
 
-  return <>{children}</>;
+  return <><CaptureHandoff />{children}</>;
 }

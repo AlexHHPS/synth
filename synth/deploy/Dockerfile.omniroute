@@ -1,0 +1,7 @@
+FROM node:26-trixie-slim
+WORKDIR /opt/omniroute
+RUN npm install --omit=dev --no-audit --no-fund omniroute@3.8.51 && mkdir -p /app/data && chown node:node /app/data
+COPY synth/deploy/omniroute-entrypoint.sh /opt/omniroute/entrypoint.sh
+USER node
+ENV DATA_DIR=/app/data PORT=20128 DASHBOARD_PORT=20128 API_PORT=20128 HOSTNAME=0.0.0.0 NEXT_TELEMETRY_DISABLED=1
+ENTRYPOINT ["sh", "/opt/omniroute/entrypoint.sh"]

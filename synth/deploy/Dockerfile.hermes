@@ -1,0 +1,10 @@
+FROM python:3.14-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN git clone https://github.com/NousResearch/hermes-agent.git /opt/hermes && cd /opt/hermes && git checkout a3b56cac95488242856b6fb1f121842a38c3e391 && pip install --no-cache-dir -e . fastapi uvicorn
+ENV PYTHONPATH=/opt/hermes:/app
+WORKDIR /app
+COPY synth/hermes /app/synth/hermes
+RUN useradd --uid 10001 --create-home synth
+USER synth
+CMD ["python", "-m", "uvicorn", "synth.hermes.app:app", "--host", "0.0.0.0", "--port", "18284", "--no-access-log"]

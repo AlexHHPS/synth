@@ -108,47 +108,18 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
 
   const saveTimeoutRef = useRef<NodeJS.Timeout>();
 
-  const initializeSummaryModelSelection = async (preferredModel = selectedSummaryModel) => {
-    try {
-      const recommendedModel = await invoke<string>('builtin_ai_get_recommended_model');
-      setRecommendedSummaryModel(recommendedModel);
-      const modelToCheck = preferredModel || recommendedModel;
-      setSelectedSummaryModel(modelToCheck);
-
-      const selectedModelReady = await invoke<boolean>('builtin_ai_is_model_ready', {
-        modelName: modelToCheck,
-        refresh: true,
-      });
-      const resolved = resolveOnboardingSummaryModelStatus({
-        selectedModel: preferredModel,
-        recommendedModel,
-        selectedModelReady,
-      });
-
-      setSelectedSummaryModel(resolved.selectedSummaryModel);
-      setSummaryModelDownloaded(resolved.summaryModelDownloaded);
-      console.log('[OnboardingContext] Set recommended model:', resolved.selectedSummaryModel);
-
-      return resolved;
-    } catch (error) {
-      console.error('[OnboardingContext] Failed to initialize summary model:', error);
-      return null;
-    }
-  };
-
-  const requestSummaryModelDownload = (modelName: string) => {
-    console.log('[OnboardingContext] Starting Summary Model download');
-    invoke('builtin_ai_download_model', { modelName })
-      .catch(err => {
-        if (String(err).includes('Download already in progress')) {
-          return;
-        }
-        console.error('[OnboardingContext] Summary Model download failed:', err);
-      });
+  // The pilot uses the existing OmniRoute route; no local summary model is selected or downloaded.
+  const initializeSummaryModelSelection = async (_preferredModel = selectedSummaryModel) => {
+    setRecommendedSummaryModel('local-combo');
+    setSelectedSummaryModel('local-combo');
+    setSummaryModelDownloaded(true); // Legacy field: route configured, not a downloaded LLM.
+    return { selectedSummaryModel: 'local-combo', summaryModelDownloaded: true };
   };
 
   // Load status on mount and initialize database
   useEffect(() => {
+    // Upgrade earlier pilot onboarding defaults without claiming permission grants or completion.
+    invoke('configure_synth_pipeline').catch(error => console.error('No se pudo configurar el pipeline de Synth:', error));
     loadOnboardingStatus();
     checkDatabaseStatus();
     initializeDatabaseInBackground();
@@ -396,28 +367,10 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
       parakeetDownloaded = false;
     }
 
-    // Verify the selected/recommended Summary model exists on disk.
-    try {
-      const recommendedModel = await invoke<string>('builtin_ai_get_recommended_model');
-      setRecommendedSummaryModel(recommendedModel);
-      const savedSelectedModel = savedStatus.model_status.selected_summary_model || '';
-      const modelToCheck = savedSelectedModel || recommendedModel;
-      const selectedModelReady = await invoke<boolean>('builtin_ai_is_model_ready', {
-        modelName: modelToCheck,
-        refresh: true,
-      });
-      const resolved = resolveOnboardingSummaryModelStatus({
-        selectedModel: savedSelectedModel,
-        recommendedModel,
-        selectedModelReady,
-      });
-      selectedSummaryModel = resolved.selectedSummaryModel;
-      summaryModelDownloaded = resolved.summaryModelDownloaded;
-      console.log('[OnboardingContext] Summary model verified on disk:', summaryModelDownloaded, 'model:', selectedSummaryModel);
-    } catch (error) {
-      console.warn('[OnboardingContext] Failed to verify Summary model:', error);
-      summaryModelDownloaded = false;
-    }
+    // Summary generation belongs to the queued OmniRoute pipeline.
+    selectedSummaryModel = 'local-combo';
+    summaryModelDownloaded = true;
+    setRecommendedSummaryModel('local-combo');
 
     // Determine the correct step based on verified status
     // New simplified flow: Step 1: Welcome, Step 2: Setup Overview, Step 3: Download Progress, Step 4: Permissions (macOS)
@@ -479,25 +432,9 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
         saveTimeoutRef.current = undefined;
       }
 
-      let modelToSave = selectedSummaryModel;
-      if (!modelToSave) {
-        modelToSave = await invoke<string>('builtin_ai_get_recommended_model');
-        setSelectedSummaryModel(modelToSave);
-      }
-
-      const selectedModelReady = await invoke<boolean>('builtin_ai_is_model_ready', {
-        modelName: modelToSave,
-        refresh: true,
-      });
-      setSummaryModelDownloaded(selectedModelReady);
-      if (!selectedModelReady) {
-        requestSummaryModelDownload(modelToSave);
-      }
-
-      // Onboarding always uses builtin-ai with selected model
-      await invoke('complete_onboarding', {
-        model: modelToSave,
-      });
+      const modelToSave = 'local-combo';
+      setSelectedSummaryModel(modelToSave);
+      await invoke('complete_onboarding', { model: modelToSave });
       setCompleted(true);
       console.log('[OnboardingContext] Onboarding completed with model:', modelToSave);
 
@@ -524,7 +461,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
 
     try {
       const shouldStartParakeet = includeParakeet && !parakeetDownloaded;
-      const shouldStartSummary = includeSummary && !summaryModelDownloaded && !!summaryModel;
+      const shouldStartSummary = false; // Local summary downloads are disabled by the user policy.
 
       if (!shouldStartParakeet && !shouldStartSummary) {
         if (includeSummary && !summaryModelDownloaded && !summaryModel) {
@@ -542,10 +479,6 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
           .catch(err => console.error('[OnboardingContext] Parakeet download failed:', err));
       }
 
-      // Start selected Summary Model download immediately so completion cannot race the request.
-      if (shouldStartSummary && summaryModel) {
-        requestSummaryModelDownload(summaryModel);
-      }
     } catch (error) {
       console.error('[OnboardingContext] Failed to start background downloads:', error);
       setIsBackgroundDownloading(false);

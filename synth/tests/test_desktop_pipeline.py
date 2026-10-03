@@ -68,13 +68,13 @@ class PipelineTests(unittest.TestCase):
                 pass
 
     def test_inference_descendant_keeps_lock_when_parent_releases_its_fd(self):
-        # Use the same rtk proxy wrapper as native inference. A surviving child
+        # Launch directly, as the packaged acoustic runtime does. A surviving child
         # must prevent a supervisor from starting overlapping acoustic work.
         with tempfile.TemporaryDirectory() as directory:
             process = None
             try:
                 with inference_lock(directory) as fd:
-                    process = subprocess.Popen(["rtk", "proxy", sys.executable, "-c",
+                    process = subprocess.Popen([sys.executable, "-c",
                         "import sys; print('ready',flush=True); sys.stdin.readline()"],
                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, pass_fds=(fd,))
                     self.assertEqual(process.stdout.readline().strip(), "ready")

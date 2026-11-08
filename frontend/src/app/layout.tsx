@@ -1,7 +1,6 @@
 'use client'
 
 import './globals.css'
-import { Inter } from 'next/font/google'
 import { usePathname } from 'next/navigation'
 import { SidebarProvider } from '@/components/Sidebar/SidebarProvider'
 import AnalyticsProvider from '@/components/AnalyticsProvider'
@@ -24,12 +23,6 @@ import { ImportAudioDialog, ImportDropOverlay } from '@/components/ImportAudio'
 import { ImportDialogProvider } from '@/contexts/ImportDialogContext'
 import { isAudioExtension, getAudioFormatsDisplayList } from '@/constants/audioFormats'
 
-
-const synthSans = Inter({
-  subsets: ['latin'],
-  weight: ['400', '500', '600', '700'],
-  variable: '--font-synth-sans',
-})
 
 // Module-level component — stable reference across RootLayout re-renders.
 // Defined here (not inside RootLayout) so React never sees a new function type
@@ -69,7 +62,7 @@ function OpenVoiceWorkspace() {
 export default function RootLayout({children}: {children: React.ReactNode}) {
   const pathname = usePathname();
   if (pathname === '/call-reminder' || pathname === '/call-reminder.html') {
-    return <html lang="es" data-mode="dark"><body className={`${synthSans.variable} font-sans antialiased voice-widget-body`}>{children}</body></html>;
+    return <html lang="es" data-mode="dark"><body className="font-sans antialiased voice-widget-body">{children}</body></html>;
   }
   return <MainRootLayout>{children}</MainRootLayout>;
 }
@@ -191,7 +184,7 @@ function MainRootLayout({
 
   return (
     <html lang="es">
-      <body className={`${synthSans.variable} font-sans antialiased`}>
+      <body className="font-sans antialiased">
         <AnalyticsProvider>
           <RecordingStateProvider>
             <TranscriptProvider enabled={!voiceWorkspace}>

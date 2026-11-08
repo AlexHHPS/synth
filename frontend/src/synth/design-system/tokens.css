@@ -16,6 +16,7 @@
   --success: 152 60% 32%; --success-foreground: 0 0% 100%;
   --warning: 32 90% 38%; --warning-solid: 36 90% 58%; --info: 205 75% 40%;
   --synth-rail: hsl(210 20% 97%);
+  --font-synth-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
   --header-height: 3.125rem; --motion-slow: 200ms;
 }
 .dark, [data-mode="dark"] {

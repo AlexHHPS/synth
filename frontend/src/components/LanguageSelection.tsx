@@ -118,7 +118,7 @@ interface LanguageSelectionProps {
   selectedLanguage: string;
   onLanguageChange: (language: string) => void;
   disabled?: boolean;
-  provider?: 'localWhisper' | 'parakeet' | 'deepgram' | 'elevenLabs' | 'groq' | 'openai';
+  provider?: 'qwen3' | 'localWhisper' | 'parakeet' | 'deepgram' | 'elevenLabs' | 'groq' | 'openai';
 }
 
 export function LanguageSelection({
@@ -129,6 +129,8 @@ export function LanguageSelection({
 }: LanguageSelectionProps) {
   const [saving, setSaving] = useState(false);
   const { setSelectedLanguage } = useConfig();
+
+  if (provider === 'qwen3') return <p>Idioma de transcripción: español · Qwen local, en directo y al finalizar.</p>;
 
   // Parakeet only supports auto-detection (doesn't support manual language selection)
   const isParakeet = provider === 'parakeet';

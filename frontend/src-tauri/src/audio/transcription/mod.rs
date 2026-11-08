@@ -5,6 +5,8 @@
 pub mod provider;
 pub mod whisper_provider;
 pub mod parakeet_provider;
+pub mod qwen_provider;
+pub mod capture_stream;
 pub mod engine;
 pub mod worker;
 

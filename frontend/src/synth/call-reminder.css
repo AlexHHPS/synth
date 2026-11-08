@@ -1,0 +1,25 @@
+/* Dark floating reminder; native window geometry is 420 × 96 points. */
+.voice-widget-body { background:transparent; overflow:hidden; margin:0; }
+.voice-call-widget-shell {
+  --widget-width:26.25rem;
+  width:100%; max-width:var(--widget-width); padding:var(--space-2); color:hsl(var(--foreground));
+  font-family:var(--font-synth-sans),sans-serif;
+}
+.voice-call-widget {
+  display:flex; align-items:center; gap:var(--space-3); min-height:var(--space-20);
+  padding:var(--space-3) var(--space-4); border-radius:var(--radius-full);
+  background:hsl(var(--card)); border:1px solid hsl(var(--border)); box-shadow:var(--shadow-lg);
+}
+.voice-widget-label { display:grid; flex:1; min-width:0; cursor:grab; }
+.voice-widget-label strong { font-size:var(--text-sm); font-weight:500; }
+.voice-widget-label span { font-size:var(--text-sm); color:hsl(var(--muted-foreground)); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.voice-widget-actions { display:flex; border:1px solid hsl(var(--border)); border-radius:var(--radius-full); overflow:hidden; flex-shrink:0; }
+.voice-widget-actions button { min-height:var(--space-12); color:hsl(var(--foreground)); background:transparent; }
+.voice-widget-actions button:hover,.voice-widget-menu button:hover { background:hsl(var(--muted)); }
+.voice-widget-actions button:focus-visible,.voice-widget-menu button:focus-visible { outline:2px solid hsl(var(--brand)); outline-offset:-3px; }
+.voice-widget-take { display:flex; align-items:center; gap:var(--space-2); padding-inline:var(--space-3); font-size:var(--text-sm); font-weight:500; }
+.voice-widget-more { display:grid; place-items:center; min-width:var(--space-12); border-left:1px solid hsl(var(--border)); }
+.voice-widget-menu { display:grid; margin-top:var(--space-2); padding:var(--space-2); border-radius:var(--radius-lg); background:hsl(var(--card)); border:1px solid hsl(var(--border)); box-shadow:var(--shadow-md); }
+.voice-widget-menu button { display:flex; align-items:center; gap:var(--space-3); min-height:var(--space-12); padding-inline:var(--space-3); font-size:var(--text-sm); text-align:left; border-radius:var(--radius-sm); }
+.voice-widget-error,.voice-widget-empty { font-size:var(--text-xs); padding:var(--space-2); color:hsl(var(--foreground)); background:hsl(var(--card)); border-radius:var(--radius-sm); }
+.voice-widget-actions button:disabled,.voice-widget-menu button:disabled { cursor:wait; }

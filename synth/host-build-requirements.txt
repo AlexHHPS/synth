@@ -1,0 +1,2 @@
+# Numeric helpers used by the frozen host, separately from Qwen's private runtime.
+numpy==2.5.4

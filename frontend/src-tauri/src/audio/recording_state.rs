@@ -243,10 +243,6 @@ impl RecordingState {
             return Ok(()); // Silently discard chunks while paused
         }
 
-        if let Some(tap) = self.source_tap.lock().unwrap().as_ref() {
-            tap.push(&chunk)?;
-        }
-
         if let Some(sender) = self.audio_sender.lock().unwrap().as_ref() {
             sender.send(chunk).map_err(|_| anyhow::anyhow!("Failed to send audio chunk"))?;
 
@@ -259,6 +255,14 @@ impl RecordingState {
             // Return an error when no sender is available (pipeline not ready)
             Err(anyhow::anyhow!("Audio pipeline not ready - no sender available"))
         }
+    }
+
+    pub fn archive_audio_chunk(&self, chunk: &AudioChunk) -> Result<()> {
+        if !self.is_active() { return Ok(()); }
+        if let Some(tap) = self.source_tap.lock().unwrap().as_ref() {
+            tap.push(chunk)?;
+        }
+        Ok(())
     }
 
     pub fn set_source_tap(&self, tap: super::source_archive::SourceTap) {

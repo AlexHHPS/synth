@@ -47,7 +47,7 @@ def delete(actor, profile_id):
         with closing(vault()) as v:
             if not v.db.execute("SELECT 1 FROM profiles WHERE id=? AND employee_id=?", (profile_id, actor["id"])).fetchone(): raise ValueError("profile_missing")
             from .sync import unshare
-            unshare(profile_id)
+            unshare(actor, profile_id)
             v.delete(profile_id)
     finally: _GATE.release()
     return {"deleted": True}
@@ -109,16 +109,20 @@ def submit(actor, recording_id, consent, operation):
                 normalize_audio(path,normalized_path,lock_fd=lock_fd)
                 d=infer("diarize",normalized_path,directory,lock_fd=lock_fd)
                 turns=d["segments"]; speakers=sorted({t["speaker_id"] for t in turns}); audio=samples(normalized_path)
-                model=json.loads(LOCK.read_text())["model_revision"]
+                from .native import embedding_model_id, CROP_SAMPLES
+                model=embedding_model_id()
                 if operation=="enroll":
                     if len(speakers)!=1: raise ValueError("enrollment_requires_one_voice")
                     clean=clean_samples(audio,turns,speakers[0]); q=quality(clean,turns)
                     if q["clean_speech_seconds"]<15 or q["clipped_fraction"]>.01 or q["rms_dbfs"] < -40 or q["overlap"]: raise ValueError("enrollment_low_quality")
-                    vectors=[embed_chunk(clean[i*80000:(i+1)*80000],directory,i,lock_fd) for i in range(3)]
+                    # Three overlapping 10 s crops spread over ≥ 15 s of clean speech.
+                    offsets=[round(i*(len(clean)-CROP_SAMPLES)/2) for i in range(3)]
+                    vectors=[embed_chunk(clean[o:o+CROP_SAMPLES],directory,i,lock_fd) for i,o in enumerate(offsets)]
                     with closing(vault()) as v:
                         # Replacement does not silently erase earlier enrollment provenance.
                         pid=v.enroll(actor["id"],model,vectors,identifier,[file_hash(path)],q)
-                    result={"profile_id":pid,"quality":q,"speakers_detected":1,"identification_state":"calibration_pending","audio_deleted":True}
+                    result={"profile_id":pid,"quality":q,"speakers_detected":1,"identification_state":"calibration_pending","audio_deleted":True,
+                            "window_selection":{"window_seconds":10,"independent":False,"crop_count":3}}
                 else:
                     comparisons=[]
                     with closing(vault()) as v:

@@ -1,11 +1,9 @@
 'use client'
 
 import './globals.css'
-import { DM_Sans } from 'next/font/google'
+import { Inter } from 'next/font/google'
 import { usePathname } from 'next/navigation'
-import Sidebar from '@/components/Sidebar'
 import { SidebarProvider } from '@/components/Sidebar/SidebarProvider'
-import MainContent from '@/components/MainContent'
 import AnalyticsProvider from '@/components/AnalyticsProvider'
 import { Toaster, toast } from 'sonner'
 import "sonner/dist/styles.css"
@@ -18,7 +16,6 @@ import { OllamaDownloadProvider } from '@/contexts/OllamaDownloadContext'
 import { TranscriptProvider } from '@/contexts/TranscriptContext'
 import { ConfigProvider, useConfig } from '@/contexts/ConfigContext'
 import { OnboardingProvider } from '@/contexts/OnboardingContext'
-import { OnboardingFlow } from '@/components/onboarding'
 import { loadBetaFeatures } from '@/types/betaFeatures'
 import { DownloadProgressToastProvider } from '@/components/shared/DownloadProgressToast'
 import { UpdateCheckProvider } from '@/components/UpdateCheckProvider'
@@ -28,10 +25,10 @@ import { ImportDialogProvider } from '@/contexts/ImportDialogContext'
 import { isAudioExtension, getAudioFormatsDisplayList } from '@/constants/audioFormats'
 
 
-const sourceSans3 = DM_Sans({
+const synthSans = Inter({
   subsets: ['latin'],
   weight: ['400', '500', '600', '700'],
-  variable: '--font-source-sans-3',
+  variable: '--font-synth-sans',
 })
 
 // Module-level component — stable reference across RootLayout re-renders.
@@ -64,42 +61,31 @@ function ConditionalImportDialog({
 
 // export { metadata } from './metadata'
 
-export default function RootLayout({
+function OpenVoiceWorkspace() {
+  useEffect(() => { window.location.replace(process.env.NODE_ENV === 'production' ? '/voice.html' : '/voice') }, [])
+  return null
+}
+
+export default function RootLayout({children}: {children: React.ReactNode}) {
+  const pathname = usePathname();
+  if (pathname === '/call-reminder' || pathname === '/call-reminder.html') {
+    return <html lang="es" data-mode="dark"><body className={`${synthSans.variable} font-sans antialiased voice-widget-body`}>{children}</body></html>;
+  }
+  return <MainRootLayout>{children}</MainRootLayout>;
+}
+
+function MainRootLayout({
   children,
 }: {
   children: React.ReactNode
 }) {
   const pathname = usePathname()
   const voiceWorkspace = pathname === '/voice' || pathname === '/voice.html'
-  const [showOnboarding, setShowOnboarding] = useState(false)
-  const [onboardingCompleted, setOnboardingCompleted] = useState(false)
 
   // Import audio state
   const [showDropOverlay, setShowDropOverlay] = useState(false)
   const [showImportDialog, setShowImportDialog] = useState(false)
   const [importFilePath, setImportFilePath] = useState<string | null>(null)
-
-  useEffect(() => {
-    // Check onboarding status first
-    invoke<{ completed: boolean } | null>('get_onboarding_status')
-      .then((status) => {
-        const isComplete = status?.completed ?? false
-        setOnboardingCompleted(isComplete)
-
-        if (!isComplete) {
-          console.log('[Layout] Onboarding not completed, showing onboarding flow')
-          setShowOnboarding(true)
-        } else {
-          console.log('[Layout] Onboarding completed, showing main app')
-        }
-      })
-      .catch((error) => {
-        console.error('[Layout] Failed to check onboarding status:', error)
-        // Default to showing onboarding if we can't check
-        setShowOnboarding(true)
-        setOnboardingCompleted(false)
-      })
-  }, [])
 
   // Disable context menu in production
   useEffect(() => {
@@ -109,27 +95,6 @@ export default function RootLayout({
       return () => document.removeEventListener('contextmenu', handleContextMenu);
     }
   }, []);
-  useEffect(() => {
-    // Listen for tray recording toggle request
-    const unlisten = listen('request-recording-toggle', () => {
-      console.log('[Layout] Received request-recording-toggle from tray');
-
-      if (showOnboarding) {
-        toast.error("Please complete setup first", {
-          description: "You need to finish onboarding before you can start recording."
-        });
-      } else {
-        // If in main app, forward to useRecordingStart via window event
-        console.log('[Layout] Forwarding to start-recording-from-sidebar');
-        window.dispatchEvent(new CustomEvent('start-recording-from-sidebar'));
-      }
-    });
-
-    return () => {
-      unlisten.then(fn => fn());
-    };
-  }, [showOnboarding]);
-
   // Handle file drop for audio import
   const handleFileDrop = useCallback((paths: string[]) => {
     // Check if beta features are enabled (read from localStorage directly since we're outside ConfigProvider)
@@ -161,7 +126,6 @@ export default function RootLayout({
 
   // Listen for drag-drop events
   useEffect(() => {
-    if (showOnboarding) return; // Don't handle drops during onboarding
 
     const unlisteners: UnlistenFn[] = [];
     const cleanedUpRef = { current: false };
@@ -209,7 +173,7 @@ export default function RootLayout({
       cleanedUpRef.current = true;
       unlisteners.forEach((unlisten) => unlisten());
     };
-  }, [showOnboarding, handleFileDrop]);
+  }, [handleFileDrop]);
 
   // Handle import dialog close
   const handleImportDialogClose = useCallback((open: boolean) => {
@@ -225,20 +189,12 @@ export default function RootLayout({
     setShowImportDialog(true);
   }, []);
 
-  const handleOnboardingComplete = () => {
-    console.log('[Layout] Onboarding completed, reloading app')
-    setShowOnboarding(false)
-    setOnboardingCompleted(true)
-    // Optionally reload the window to ensure all state is fresh
-    window.location.reload()
-  }
-
   return (
     <html lang="es">
-      <body className={`${sourceSans3.variable} font-sans antialiased`}>
+      <body className={`${synthSans.variable} font-sans antialiased`}>
         <AnalyticsProvider>
           <RecordingStateProvider>
-            <TranscriptProvider>
+            <TranscriptProvider enabled={!voiceWorkspace}>
               <ConfigProvider>
                 <OllamaDownloadProvider>
                   <OnboardingProvider>
@@ -251,14 +207,8 @@ export default function RootLayout({
                               <DownloadProgressToastProvider />
 
                               {/* Show onboarding or main app */}
-                              {voiceWorkspace ? children : showOnboarding ? (
-                                <OnboardingFlow onComplete={handleOnboardingComplete} />
-                              ) : (
-                                <div className="flex">
-                                  <Sidebar />
-                                  <MainContent>{children}</MainContent>
-                                </div>
-                              )}
+                              {/* Synth is the only interface; the inherited Meetily screens are never shown. */}
+                              {voiceWorkspace ? children : <OpenVoiceWorkspace />}
                               {/* Import audio overlay and dialog */}
                               <ImportDropOverlay visible={showDropOverlay} />
                               <ConditionalImportDialog

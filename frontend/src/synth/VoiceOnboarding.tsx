@@ -5,6 +5,7 @@ import { Mic, ShieldCheck, Trash2, AudioLines, RefreshCw, Users, CheckCircle2 } 
 import { CardHeader } from './design-system/card-header';
 import { Button } from './design-system/button';
 import { message, pipelineRequest, time } from './api';
+import { VoiceLearning } from './VoiceLearning';
 type Profile = { id: string; created_at: number; revoked: number; model: string };
 type VoiceStatus = { employee_name: string; profiles: Profile[]; identification_state: string; sync_state?: string; corporate_profiles?: { id: string; name: string; employee_id: string }[] };
 type Job = { id: string; state: string; operation: string; error_code: string | null; result: null | { profile_id?: string; speakers_detected: number; audio_deleted: boolean; quality?: { clean_speech_seconds: number }; comparisons?: { speaker_id: string; clean_seconds: number; similarity: number | null; reason: string }[]; turns?: { speaker_id: string; start_ms: number; end_ms: number }[] } };
@@ -98,5 +99,6 @@ export function VoiceOnboarding() {
       {showShareForm && <><p>Solo se sincroniza el embedding de voz, cifrado en Supabase. El audio se borra tras el análisis y no se sube.</p><label className="voice-capture-consent"><input type="checkbox" checked={shareConsent} disabled={sharing} onChange={e => setShareConsent(e.target.checked)} /><span>Acepto compartir mi perfil de voz con los empleados autorizados de mi organización para este piloto.</span></label><div className="voice-section-actions"><span className="voice-notice">Registro conectado</span><div className="voice-profile-actions">{shareEditor && <Button size="sm" variant="ghost" disabled={sharing} onClick={() => setShareEditor(false)}>Cancelar</Button>}<Button size="sm" loading={sharing} disabled={!shareConsent || busy || deleting} onClick={() => void share(profiles[0].id)}>Compartir mi perfil</Button></div></div></>}
       {!synced && <p className="voice-notice">El perfil local sigue disponible. Vuelve a comprobar la conexión para confirmar si está compartido.</p>}
     </section>}
+    {!!profiles.length && <VoiceLearning />}
   </div>;
 }

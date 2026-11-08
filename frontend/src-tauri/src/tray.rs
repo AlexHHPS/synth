@@ -44,10 +44,9 @@ fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, item_id: &str) {
         "settings" => {
             focus_main_window(app);
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window.eval("window.location.assign('/settings')");
+                let _ = window.eval("window.location.assign('/voice.html?view=settings')");
             }
         }
-        "check_updates" => check_updates_handler(app),
         "quit" => app.exit(0),
         _ => {}
     }
@@ -196,15 +195,6 @@ fn stop_recording_handler<R: Runtime>(app: &AppHandle<R>) {
     });
 }
 
-fn check_updates_handler<R: Runtime>(app: &AppHandle<R>) {
-    focus_main_window(app);
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.eval(
-            "window.dispatchEvent(new CustomEvent('check-updates-from-tray'))"
-        );
-    }
-}
-
 pub fn update_tray_menu<R: Runtime>(app: &AppHandle<R>) {
     // For sync update, spawn async task to get current state
     let app_clone = app.clone();
@@ -319,7 +309,7 @@ fn build_menu<R: Runtime>(
     // If recording is not allowed (during onboarding, no transcription model), show disabled message
     if !can_record {
         builder = builder.item(
-            &MenuItemBuilder::new("⏳ Downloading transcription model...")
+            &MenuItemBuilder::new(format!("Preparando {}…", crate::product_identity::name()))
                 .enabled(false)
                 .build(app)?,
         );
@@ -331,45 +321,45 @@ fn build_menu<R: Runtime>(
             }
             RecordingState::Starting => {
                 builder = builder.item(
-                    &MenuItemBuilder::new("🔄 Starting Recording...")
+                    &MenuItemBuilder::new("Empezando la grabación…")
                         .enabled(false)
                         .build(app)?,
                 );
             }
             RecordingState::Recording => {
                 builder = builder
-                    .item(&MenuItemBuilder::with_id("pause_recording", "⏸ Pause Recording").build(app)?)
-                    .item(&MenuItemBuilder::with_id("stop_recording", "⏹ Stop Recording").build(app)?);
+                    .item(&MenuItemBuilder::with_id("pause_recording", "Pausar").build(app)?)
+                    .item(&MenuItemBuilder::with_id("stop_recording", "Finalizar y generar notas").build(app)?);
             }
             RecordingState::Pausing => {
                 builder = builder
                     .item(
-                        &MenuItemBuilder::new("⏸ Pausing...")
+                        &MenuItemBuilder::new("Pausando…")
                             .enabled(false)
                             .build(app)?,
                     )
-                    .item(&MenuItemBuilder::with_id("stop_recording", "⏹ Stop Recording").build(app)?);
+                    .item(&MenuItemBuilder::with_id("stop_recording", "Finalizar y generar notas").build(app)?);
             }
             RecordingState::Paused => {
                 builder = builder
                     .item(
-                        &MenuItemBuilder::with_id("resume_recording", "▶ Resume Recording")
+                        &MenuItemBuilder::with_id("resume_recording", "Reanudar")
                             .build(app)?,
                     )
-                    .item(&MenuItemBuilder::with_id("stop_recording", "⏹ Stop Recording").build(app)?);
+                    .item(&MenuItemBuilder::with_id("stop_recording", "Finalizar y generar notas").build(app)?);
             }
             RecordingState::Resuming => {
                 builder = builder
                     .item(
-                        &MenuItemBuilder::new("▶ Resuming...")
+                        &MenuItemBuilder::new("Reanudando…")
                             .enabled(false)
                             .build(app)?,
                     )
-                    .item(&MenuItemBuilder::with_id("stop_recording", "⏹ Stop Recording").build(app)?);
+                    .item(&MenuItemBuilder::with_id("stop_recording", "Finalizar y generar notas").build(app)?);
             }
             RecordingState::Stopping => {
                 builder = builder.item(
-                    &MenuItemBuilder::new("⏹ Stopping...")
+                    &MenuItemBuilder::new("Cerrando la grabación…")
                         .enabled(false)
                         .build(app)?,
                 );
@@ -379,11 +369,10 @@ fn build_menu<R: Runtime>(
 
     builder
         .item(&PredefinedMenuItem::separator(app)?)
-        .item(&MenuItemBuilder::with_id("open_window", "Open Main Window").build(app)?)
-        .item(&MenuItemBuilder::with_id("settings", "Settings").build(app)?)
-        .item(&MenuItemBuilder::with_id("check_updates", "Check for Updates").build(app)?)
+        .item(&MenuItemBuilder::with_id("open_window", format!("Abrir {}", crate::product_identity::name())).build(app)?)
+        .item(&MenuItemBuilder::with_id("settings", "Ajustes…").build(app)?)
         .item(&PredefinedMenuItem::separator(app)?)
-        .item(&MenuItemBuilder::with_id("quit", "Quit").build(app)?)
+        .item(&MenuItemBuilder::with_id("quit", format!("Salir de {}", crate::product_identity::name())).build(app)?)
         .build()
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "synth"
-version = "0.4.1"
+version = "0.5.0"
 description = "A Tauri App for meeting minutes"
 authors = ["Sujith S"]
 license = "MIT"
@@ -81,7 +81,7 @@ cpal = "0.15.3"
 clap = { version = "4.3", features = ["derive"] }
 
 # Dates
-chrono = { version = "0.4.31", features = ["serde"] }
+chrono = { version = "0.4.41", features = ["serde"] }
 
 # Log
 log = "0.4"

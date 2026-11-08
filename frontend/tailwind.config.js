@@ -11,7 +11,7 @@ module.exports = {
   	extend: {
   		fontFamily: {
   			sans: [
-  				'var(--font-source-sans-3)'
+  				'var(--font-synth-sans)'
   			]
   		},
   		colors: {

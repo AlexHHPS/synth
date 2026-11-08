@@ -35,9 +35,37 @@ pub fn set_models_directory<R: Runtime>(app: &AppHandle<R>) {
         }
     }
     log::info!("Models directory set to: {}", models_dir.display());
+    if let Ok(resources) = app.path().resource_dir() {
+        link_bundled_model(&resources.join(BUNDLED_MODEL_DIR), &models_dir);
+    }
 
     let mut guard = MODELS_DIR.lock().unwrap();
     *guard = Some(models_dir);
+}
+
+/// The pilot DMG ships the transcription model inside the voice host (package-pilot.py).
+const BUNDLED_MODEL_DIR: &str = "synth-host/_internal/models";
+const BUNDLED_MODEL: &str = "ggml-large-v3-turbo-q5_0.bin";
+
+/// Point the live-transcript engine at the model the app ships, so a fresh install never needs a download.
+/// A copy the user already has is kept; a link left dangling by moving the app is replaced.
+fn link_bundled_model(bundled_dir: &std::path::Path, models_dir: &std::path::Path) {
+    let source = bundled_dir.join(BUNDLED_MODEL);
+    let target = models_dir.join(BUNDLED_MODEL);
+    if !source.is_file() || target.is_file() {
+        return;
+    }
+    if target.symlink_metadata().is_ok() {
+        let _ = std::fs::remove_file(&target);
+    }
+    #[cfg(unix)]
+    let linked = std::os::unix::fs::symlink(&source, &target);
+    #[cfg(not(unix))]
+    let linked = std::fs::copy(&source, &target).map(|_| ());
+    match linked {
+        Ok(()) => log::info!("Linked bundled transcription model into {}", models_dir.display()),
+        Err(e) => log::error!("Failed to link bundled transcription model: {}", e),
+    }
 }
 
 /// Get the configured models directory
@@ -573,4 +601,28 @@ pub async fn open_models_folder() -> Result<(), String> {
 
     log::info!("Opened models folder: {}", folder_path);
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod bundled_model_tests {
+    use super::*;
+
+    #[test]
+    fn links_the_bundled_model_and_repairs_a_dangling_link() {
+        let root = std::env::temp_dir().join(format!("synth-bundled-{}", std::process::id()));
+        let (bundled, models) = (root.join("bundled"), root.join("models"));
+        std::fs::create_dir_all(&bundled).unwrap();
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::write(bundled.join(BUNDLED_MODEL), b"model").unwrap();
+        std::os::unix::fs::symlink(root.join("moved-away"), models.join(BUNDLED_MODEL)).unwrap();
+
+        link_bundled_model(&bundled, &models);
+        assert_eq!(std::fs::read(models.join(BUNDLED_MODEL)).unwrap(), b"model");
+
+        std::fs::remove_file(models.join(BUNDLED_MODEL)).unwrap();
+        std::fs::write(models.join(BUNDLED_MODEL), b"own copy").unwrap();
+        link_bundled_model(&bundled, &models);
+        assert_eq!(std::fs::read(models.join(BUNDLED_MODEL)).unwrap(), b"own copy");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }

@@ -62,7 +62,12 @@ class DesktopQueue:
         else:
             self.db.execute("COMMIT")
 
-    def enqueue(self, sources, title, folder_id=None, consent_confirmed=False, capture_id=None, notes="", owner_id=None):
+    def enqueue(self, sources, title, folder_id=None, consent_confirmed=False, capture_id=None, notes="", owner_id=None, eval_retention=False, participants=None, calendar_event_id=None):
+        if calendar_event_id is not None:
+            try:
+                calendar_event_id = str(UUID(str(calendar_event_id)))
+            except (ValueError, TypeError, AttributeError):
+                raise QueueError('capture_calendar_event_invalid') from None
         if owner_id is not None:
             owner_id = str(UUID(str(owner_id)))
         if consent_confirmed is not True:
@@ -71,6 +76,15 @@ class DesktopQueue:
             raise QueueError("capture_title_invalid")
         if not isinstance(notes, str) or len(notes) > 200000:
             raise QueueError("capture_notes_invalid")
+        if eval_retention not in (True, False):
+            raise QueueError("capture_eval_flag_invalid")
+        if participants is not None:
+            try:
+                participants = sorted({str(UUID(str(p))) for p in participants})
+            except (ValueError, TypeError, AttributeError):
+                raise QueueError("capture_participants_invalid") from None
+            if not participants or len(participants) > 200:
+                raise QueueError("capture_participants_invalid")
         if folder_id is not None:
             try:
                 folder_id = str(UUID(folder_id))
@@ -94,7 +108,7 @@ class DesktopQueue:
                     metadata = json.loads(old["metadata"])
                     requested = {kind: str(Path(path).resolve()) for kind, path in sources.items()}
                     stored = {kind: value["path"] for kind, value in metadata["sources"].items()}
-                    if requested != stored or title.strip() != metadata["title"] or folder_id != metadata["folder_id"] or notes != metadata.get("notes", "") or owner_id != metadata.get("owner_id"):
+                    if requested != stored or title.strip() != metadata["title"] or folder_id != metadata["folder_id"] or notes != metadata.get("notes", "") or owner_id != metadata.get("owner_id") or eval_retention != metadata.get("eval_retention", False) or calendar_event_id != metadata.get('calendar_event_id'):
                         raise QueueError("capture_idempotency_conflict")
                     return self.decode(old)
         descriptors = {}
@@ -128,6 +142,12 @@ class DesktopQueue:
             metadata["capture_id"] = capture_id
         if notes:
             metadata["notes"] = notes
+        if eval_retention:
+            metadata["eval_retention"] = True
+        if participants:
+            metadata["participants"] = participants
+        if calendar_event_id:
+            metadata['calendar_event_id'] = calendar_event_id
         # One captured set produces one task. Different requested options conflict,
         # rather than silently creating a second meeting after a retransmission.
         key = "receipt:" + capture_id if capture_id else hashlib.sha256(self.encode(descriptors).encode()).hexdigest()
@@ -196,7 +216,8 @@ class DesktopQueue:
             return row["state"] != "cancel_requested"
 
     def checkpoint(self, identifier, token, stage, descriptor, now=None):
-        if stage not in {"normalized", "asr", "diarization", "canonical", "identified", "uploaded"}:
+        if stage not in {"consolidated", "normalized", "bleed", "acoustic", "asr", "asr_microphone", "asr_system", "asr_import",
+                         "diarization", "canonical", "identified", "uploaded", "voice_plan", "voice_applied"}:
             raise QueueError("checkpoint_stage_invalid")
         now = time.time() if now is None else now
         with self.transaction():
@@ -225,6 +246,14 @@ class DesktopQueue:
                     raise QueueError("task_result_missing")
             self.db.execute("UPDATE desktop_tasks SET state=?,result=?,error_code=?,lease_token=NULL,lease_until=NULL,updated_at=? WHERE id=?", (state, self.encode(result) if result is not None else None, error_code, now, identifier))
             return self.get(identifier)
+
+    def list_owned(self, owner_id, limit=100):
+        owner_id = str(UUID(str(owner_id)))
+        if not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise QueueError('task_limit_invalid')
+        return self.db.execute("""SELECT * FROM desktop_tasks
+            WHERE json_extract(metadata,'$.owner_id')=?
+            ORDER BY created_at DESC,id DESC LIMIT ?""", (owner_id, limit)).fetchall()
 
     def cancel(self, identifier):
         with self.transaction():

@@ -53,6 +53,10 @@ impl TranscriptionEngine {
 
 /// Validate that transcription models (Whisper or Parakeet) are ready before starting recording
 pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    if super::qwen_provider::packaged(app) {
+        super::qwen_provider::prepare_capture(app).await?;
+        return Ok(());
+    }
     // Check transcript configuration to determine which engine to validate
     let config = match crate::api::api::api_get_transcript_config(
         app.clone(),
@@ -149,6 +153,9 @@ pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) 
 pub async fn get_or_init_transcription_engine<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Result<TranscriptionEngine, String> {
+    if super::qwen_provider::packaged(app) {
+        return Ok(TranscriptionEngine::Provider(super::qwen_provider::get_or_init(app).await?));
+    }
     // Get provider configuration from API
     let config = match crate::api::api::api_get_transcript_config(
         app.clone(),

@@ -173,11 +173,11 @@ pub async fn configure_synth_pipeline(
 ) -> Result<(), String> {
     let pool = state.db_manager.pool();
     SettingsRepository::save_model_config(
-        pool, "synth-pipeline", "local-combo", "large-v3-turbo-q5_0", None,
+        pool, "synth-pipeline", "instant-combo", "Qwen3-ASR-1.7B", None,
     ).await.map_err(|_| "No se pudo configurar el servicio de actas.".to_string())?;
     SettingsRepository::save_transcript_config(
-        pool, "localWhisper", "large-v3-turbo-q5_0",
-    ).await.map_err(|_| "No se pudo configurar Whisper local.".to_string())?;
+        pool, "qwen3", "Qwen3-ASR-1.7B",
+    ).await.map_err(|_| "No se pudo configurar Qwen local.".to_string())?;
     Ok(())
 }
 
@@ -187,8 +187,8 @@ pub async fn complete_onboarding<R: Runtime>(
     state: tauri::State<'_, AppState>,
     model: String,
 ) -> Result<(), String> {
-    if model != "local-combo" {
-        return Err("Las actas del piloto usan OmniRoute local-combo.".to_string());
+    if model != "instant-combo" {
+        return Err("Las actas usan el servicio de actas de tu organización (instant-combo).".to_string());
     }
     info!("Completing Synth onboarding with the Synth document pipeline");
 

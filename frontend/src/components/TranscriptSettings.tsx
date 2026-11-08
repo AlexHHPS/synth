@@ -10,7 +10,7 @@ import { ParakeetModelManager } from './ParakeetModelManager';
 
 
 export interface TranscriptModelProps {
-    provider: 'localWhisper' | 'parakeet' | 'deepgram' | 'elevenLabs' | 'groq' | 'openai';
+    provider: 'qwen3' | 'localWhisper' | 'parakeet' | 'deepgram' | 'elevenLabs' | 'groq' | 'openai';
     model: string;
     apiKey?: string | null;
 }
@@ -51,6 +51,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
         }
     };
     const modelOptions = {
+        qwen3: ['Qwen3-ASR-1.7B'],
         localWhisper: [], // Model selection handled by ModelManager component
         parakeet: [], // Model selection handled by ParakeetModelManager component
         deepgram: ['nova-2-phonecall'],
@@ -59,6 +60,10 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
         openai: ['gpt-4o'],
     };
     const requiresApiKey = transcriptModelConfig.provider === 'deepgram' || transcriptModelConfig.provider === 'elevenLabs' || transcriptModelConfig.provider === 'openai' || transcriptModelConfig.provider === 'groq';
+
+    if (transcriptModelConfig.provider === 'qwen3') {
+        return <div><h3>Transcripción local</h3><p>Qwen3-ASR 1.7B · En directo y al finalizar.</p><p>La app prepara y reutiliza el modelo automáticamente.</p></div>;
+    }
 
     const handleInputClick = () => {
         if (isApiKeyLocked) {

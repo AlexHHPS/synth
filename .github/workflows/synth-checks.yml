@@ -5,20 +5,49 @@ on:
   pull_request:
 permissions:
   contents: read
+concurrency:
+  group: synth-checks-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   contracts:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: synth_test
+        # The PostgreSQL suites refuse any database but this disposable port.
+        ports: ['18289:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      SYNTH_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:18289/synth_test
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install -r synth/deploy/requirements.txt
-      - run: python -m unittest discover -s synth/tests
-      - run: python scripts/audit-public.py --tree HEAD
-      - run: docker build -f synth/deploy/Dockerfile -t synth-api:check .
+          cache: pip
+      - run: pip install -r synth/deploy/requirements.txt -r synth/tests/requirements-test.txt -r synth/host-build-requirements.txt
+      - name: Unit and PostgreSQL tests
+        run: python -m unittest discover -s synth/tests
+      - name: Public source audit (final tree)
+        run: python scripts/audit-public.py --tree HEAD
+      - name: Public source audit (every commit in the pull request)
+        if: github.event_name == 'pull_request'
+        run: python scripts/audit-public.py --tree HEAD --history-since ${{ github.event.pull_request.base.sha }}
+      - name: Service images
+        run: |
+          docker build -f synth/deploy/Dockerfile -t synth-api:check .
+          docker build -f synth/deploy/Dockerfile.worker -t synth-worker:check .
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -27,9 +56,20 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - uses: oven-sh/setup-bun@v2
       - run: pnpm install --frozen-lockfile
         working-directory: frontend
       - run: pnpm exec tsc --noEmit
         working-directory: frontend
+      - name: Unit tests
+        # bun shares module mocks across files in one process, so each file runs alone.
+        working-directory: frontend
+        run: |
+          set -e
+          for file in $(find tests -name '*.test.ts' -o -name '*.test.tsx' | sort); do
+            bun test "$file"
+          done
       - run: pnpm build
         working-directory: frontend

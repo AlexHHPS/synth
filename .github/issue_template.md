@@ -13,9 +13,9 @@
 3. [And so on...]
 
 ## Environment
-- OS: [e.g., macOS, Windows, Linux]
-- Browser: [e.g., Chrome, Firefox, Safari]
-- Version: [e.g., 1.0.0]
+- macOS version and chip: [e.g., macOS 15.1, Apple M2]
+- Synth version: [e.g., 0.5.0]
+- Component: [desktop app, central API, document worker, MCP client]
 
 ## Screenshots
 [If applicable, add screenshots to help explain your problem]

@@ -1,5 +1,5 @@
 """Local pilot REST API. Bearer keys never appear in URLs or application logs."""
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 import os
 import secrets
 from typing import Annotated
@@ -16,9 +16,10 @@ from .db import digest
 from synth.contracts.transcript import Transcript
 from synth.worker.queue import submit, cancel
 
-from .db import audit, authenticate, authorize_folder, authorize_meeting, connect, digest, migrate
+from .db import audit, authenticate, authorize_folder, authorize_meeting, bind_actor, connect, digest, migrate
 from .supabase_auth import auth_mode, allowed_domains, configuration, verified_user, verify_live_session
 from .voice_registry import Enrollment, seal, unseal
+from . import follow_up, glossary, items, minutes_view, questions, speakers, generation_view, meeting_context, voice_learning, google_calendar
 
 
 @asynccontextmanager
@@ -59,8 +60,16 @@ async def protect_local_mcp(request: Request, call_next):
 
 def session(credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]):
     with connect() as db:
-        actor = authenticate(db, credentials.credentials if credentials else None)
+        actor = bind_actor(db, authenticate(db, credentials.credentials if credentials else None))
         yield db, actor
+
+
+@contextmanager
+def actor_connection(actor):
+    """A further connection for the same request (MCP waits for an answer): bound to the same actor."""
+    with connect() as db:
+        bind_actor(db, actor)
+        yield db
 
 
 # Commit before returning a response: a newly issued key must be immediately usable.
@@ -93,6 +102,7 @@ class Meeting(BaseModel):
     title: str = Field(min_length=1, max_length=300)
     folder_id: UUID | None = None
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
+    calendar_event_id: UUID | None = None
 
 
 class Notes(BaseModel):
@@ -206,9 +216,11 @@ def corporate_voice_profiles(context: Session):
         ORDER BY v.id LIMIT 501""", (auth_mode(),)).fetchall()
     if len(rows) > 500:
         raise HTTPException(503, "El registro supera el límite del piloto.")
+    rows += voice_learning.accepted_profiles(db)
     audit(db, actor["id"], "voice.sync", None, {"profiles": len(rows)})
     return {"profiles": [{"id": r["id"], "employee_id": r["owner_id"], "name": r["name"],
-        "model": r["model"], "embedding": unseal(r), "updated_at": r["updated_at"]} for r in rows],
+        "model": r["model"], "embedding": unseal(r), "updated_at": r["updated_at"],
+        "root_profile_id": r.get("root_profile_id"), "derived": r.get("root_profile_id") is not None} for r in rows],
         "cache_ttl_seconds": 300, "audio_stored": False}
 
 
@@ -398,8 +410,10 @@ def create_meeting(body: Meeting, context: Session):
     require_user(actor)
     if body.folder_id:
         authorize_folder(db, actor, body.folder_id, True)
-    request_hash = digest(json.dumps({"title": body.title,
-        "folder_id": str(body.folder_id) if body.folder_id else None}, sort_keys=True))
+    receipt_body = {"title": body.title, "folder_id": str(body.folder_id) if body.folder_id else None}
+    if body.calendar_event_id:
+        receipt_body['calendar_event_id'] = str(body.calendar_event_id)
+    request_hash = digest(json.dumps(receipt_body, sort_keys=True))
     if body.idempotency_key is not None:
         # Serialize simultaneous delivery of the same capture, inside the same
         # transaction as its meeting and receipt. Actor scoping prevents leaks.
@@ -415,7 +429,12 @@ def create_meeting(body: Meeting, context: Session):
             authorize_meeting(db, actor, receipt["meeting_id"])
             return db.execute("SELECT id,state,revision FROM meetings WHERE id=%s", (receipt["meeting_id"],)).fetchone()
     mid = uuid4()
-    db.execute("INSERT INTO meetings(id,owner_id,folder_id,title,state) VALUES (%s,%s,%s,%s,'capturing')", (mid, actor["id"], body.folder_id, body.title))
+    # A cancelled/disconnected/rescoped event must never prevent saving real audio.
+    event = db.execute('''SELECT id FROM calendar_events WHERE id=%s AND owner_id=%s AND active
+        AND folder_id IS NOT DISTINCT FROM %s FOR KEY SHARE''',
+        (body.calendar_event_id, actor['id'], body.folder_id)).fetchone() if body.calendar_event_id else None
+    db.execute("INSERT INTO meetings(id,owner_id,folder_id,title,state,calendar_event_id) VALUES (%s,%s,%s,%s,'capturing',%s)",
+        (mid, actor["id"], body.folder_id, body.title, event['id'] if event else None))
     if body.idempotency_key is not None:
         db.execute("INSERT INTO meeting_creation_receipts(owner_id,idempotency_key,request_hash,meeting_id) VALUES (%s,%s,%s,%s)",
                    (actor["id"], body.idempotency_key, request_hash, mid))
@@ -447,7 +466,7 @@ def delete_folder(folder_id: UUID, context: Session):
     folder = authorize_folder(db, actor, folder_id, True)
     if folder["owner_id"] != actor["id"]:
         raise HTTPException(403, "Solo el propietario puede eliminar la carpeta.")
-    db.execute("UPDATE meetings SET folder_id=NULL,revision=revision+1,updated_at=now() WHERE folder_id=%s", (folder_id,))
+    db.execute("SELECT release_folder(%s)", (folder_id,))  # members' meetings too: schema v10, owner only
     db.execute("DELETE FROM folders WHERE id=%s", (folder_id,))
     audit(db, actor["id"], "folder.delete", folder_id)
     return {"deleted": True, "meetings_private": True}
@@ -505,6 +524,12 @@ def transcript(meeting_id: UUID, context: Session, version: int | None = None):
     row = db.execute("SELECT version,content,content_hash,model_fingerprint FROM transcript_versions WHERE meeting_id=%s AND (%s::int IS NULL OR version=%s) ORDER BY version DESC LIMIT 1", (meeting_id, version, version)).fetchone()
     if not row:
         raise HTTPException(404, "Todavía no hay una transcripción disponible.")
+    corrections = row["content"].get("corrections") or []
+    if any(c["status"] == "suggested" for c in corrections):
+        # A rejected suggestion is kept per meeting (correction_reviews), not in the immutable version.
+        rejected = glossary.rejected_corrections(db, meeting_id)
+        row["content"]["corrections"] = [{**c, "status": "rejected"} if c["status"] == "suggested" and c["id"] in rejected else c
+                                         for c in corrections]
     return row
 
 
@@ -513,10 +538,21 @@ def upload_transcript(meeting_id: UUID, body: TranscriptUpload, context: Session
     db, actor = context
     require_user(actor)
     authorize_meeting(db, actor, meeting_id, True)
+    # Names and employee ids are set only by the owner through /speakers, never by an upload.
+    rows = body.transcript.segments + (body.transcript.turns or [])
+    if body.transcript.speakers or any(row.employee_id for row in rows):
+        raise HTTPException(422, "Los nombres de los hablantes solo se confirman desde la reunión.")
+    if body.transcript.corrections or body.transcript.raw_version:
+        raise HTTPException(422, "Las correcciones del glosario las crea el servicio, no una subida.")
+    return store_transcript_version(db, actor, meeting_id, body.transcript, body.idempotency_key, "transcript.upload")
+
+
+def store_transcript_version(db, actor, meeting_id, transcript, idempotency_key, action):
+    """New transcript version + a queued document for it (idempotent per key)."""
     meeting = db.execute("SELECT notes FROM meetings WHERE id=%s FOR UPDATE", (meeting_id,)).fetchone()
-    content = body.transcript.model_dump()
+    content = transcript.model_dump()
     content_hash = digest(json.dumps(content, sort_keys=True, ensure_ascii=False))
-    idem = str(meeting_id) + ":" + body.idempotency_key
+    idem = str(meeting_id) + ":" + idempotency_key
     old = db.execute("SELECT id,payload FROM jobs WHERE idempotency_key=%s", (idem,)).fetchone()
     if old:
         if old["payload"].get("transcript_hash") != content_hash:
@@ -524,7 +560,7 @@ def upload_transcript(meeting_id: UUID, body: TranscriptUpload, context: Session
         return {"job_id": old["id"], "transcript_version": old["payload"]["transcript_version"], "reused": True}
     version = db.execute("SELECT COALESCE(max(version),0)+1 AS version FROM transcript_versions WHERE meeting_id=%s", (meeting_id,)).fetchone()["version"]
     db.execute("INSERT INTO transcript_versions(meeting_id,version,content,content_hash,model_fingerprint,search_text) VALUES (%s,%s,%s,%s,%s,%s)",
-               (meeting_id, version, Jsonb(content), content_hash, body.transcript.model_fingerprint, " ".join(s.text for s in body.transcript.segments)))
+               (meeting_id, version, Jsonb(content), content_hash, transcript.model_fingerprint, " ".join(s.text for s in transcript.segments)))
     jid, _ = submit(db, meeting_id, "document", idem, {"transcript_version": version, "transcript_hash": content_hash, "human_notes": meeting["notes"]})
     # Queued work for an earlier transcript is superseded; retain its history.
     # A running job remains fenced and cannot change the newer meeting's state.
@@ -532,8 +568,19 @@ def upload_transcript(meeting_id: UUID, body: TranscriptUpload, context: Session
         WHERE meeting_id=%s AND kind='document' AND state='queued'
         AND (payload->>'transcript_version')::int < %s""", (meeting_id, version))
     db.execute("UPDATE meetings SET state='queued',updated_at=now(),revision=revision+1 WHERE id=%s", (meeting_id,))
-    audit(db, actor["id"], "transcript.upload", meeting_id, {"version": version, "job_id": str(jid)})
+    audit(db, actor["id"], action, meeting_id, {"version": version, "job_id": str(jid)})
     return {"job_id": jid, "transcript_version": version, "reused": False}
+
+
+speakers.register(app, Session, store_transcript_version)
+items.register(app, Session)
+minutes_view.register(app, Session)
+glossary.register(app, Session, store_transcript_version)
+questions.register(app, Session)
+voice_learning.register(app, Session)
+google_calendar.register(app, Session)
+follow_up.register(app, Session)
+generation_view.register(app, Session)
 
 
 @app.get("/v1/jobs/{job_id}")
@@ -643,6 +690,12 @@ def search(q: str, context: Session, folder_id: UUID | None = None, limit: int =
     return {"items": result}
 
 
+@app.get("/v1/meetings/{meeting_id}/context")
+def checkpoint_context(meeting_id: UUID, context: Session, q: str = ""):
+    db, actor = context
+    return meeting_context.snapshot(db, actor, meeting_id, q)
+
+
 @app.get("/v1/meetings/{meeting_id}/summary")
 def summary(meeting_id: UUID, context: Session, version: int | None = None):
     return document(meeting_id,context,version)
@@ -672,9 +725,14 @@ MCP_TOOLS=[
     tool("get_document","Lee acta completa en JSON y Markdown con citas.",{**MID,**VERSION},["meeting_id"]),
     tool("get_summary","Lee resumen, decisiones, tareas y dudas, con citas.",{**MID,**VERSION},["meeting_id"]),
     tool("get_notes","Lee las notas humanas y su revisión.",MID,["meeting_id"]),
+    tool("get_meeting_context","Recupera glosario aprobado y antecedentes citados de la carpeta para un checkpoint; no confirma identidades ni acuerdos.",
+         {**MID,"query":{"type":"string","maxLength":500}},["meeting_id"]),
     tool("list_versions","Lista versiones y hashes de transcripciones y actas.",MID,["meeting_id"]),
     tool("get_processing_status","Consulta trabajos de una reunión o el estado de un trabajo autorizado.",{"job_id":{"type":"string","format":"uuid"},**MID}),
     tool("search_transcripts","Busca texto autorizado con referencias a segmentos.",{"q":{"type":"string","minLength":1,"maxLength":500},"folder_id":{"type":"string","format":"uuid"}},["q"]),
+    tool("ask_meetings","Pregunta a las reuniones autorizadas; responde con citas a turnos o «No consta». Espera hasta 45 s; si no hay respuesta aún, devuelve el id para get_answer.",
+         {"question":{"type":"string","minLength":3,"maxLength":500},"folder_id":{"type":"string","format":"uuid"},**MID},["question"]),
+    tool("get_answer","Lee la respuesta de una pregunta hecha con ask_meetings.",{"question_id":{"type":"string","format":"uuid"}},["question_id"]),
 ]
 
 def validate_tool_args(name,args):
@@ -725,12 +783,24 @@ def mcp(body: RPC | list[RPC], context: Session, request: Request):
             elif name == "list_folders": result=list_folders(context)
             elif name == "get_meeting": result=get_meeting(UUID(args["meeting_id"]),context)
             elif name == "get_notes": result=read_notes(UUID(args["meeting_id"]),context)
+            elif name == "get_meeting_context": result=checkpoint_context(UUID(args["meeting_id"]),context,str(args.get("query", "")))
             elif name == "list_versions": result=versions(UUID(args["meeting_id"]),context)
             elif name == "get_processing_status": result=job_status(UUID(args["job_id"]),context) if "job_id" in args else meeting_jobs(UUID(args["meeting_id"]),context)
             elif name in ("get_transcript", "get_document", "get_summary"):
                 result = (transcript if name == "get_transcript" else document)(UUID(args["meeting_id"]), context, int(args["version"]) if args.get("version") else None)
             elif name == "search_transcripts":
                 result = search(str(args["q"]), context, UUID(args["folder_id"]) if args.get("folder_id") else None)
+            elif name == "ask_meetings":
+                if args.get("folder_id") and args.get("meeting_id"):
+                    raise ValueError("folder_or_meeting")
+                db, actor = context
+                asked = questions.ask(db, actor, questions.Ask(question=args["question"], folder_id=args.get("folder_id"), meeting_id=args.get("meeting_id")))
+                # The question row must be visible to the worker before waiting for its answer.
+                db.commit()
+                result = asked if asked["state"] == "answered" else questions.wait(lambda: actor_connection(actor), actor, asked["id"])
+            elif name == "get_answer":
+                db, actor = context
+                result = questions.read(db, actor, UUID(args["question_id"]))
             else:
                 raise ValueError("unknown_tool")
             result = {"content": [{"type": "text", "text": json.dumps(jsonable_encoder(result), ensure_ascii=False)}], "isError": False}

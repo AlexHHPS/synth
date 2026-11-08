@@ -1,9 +1,16 @@
 @import './design-system/tokens.css';
+@import './live-voices.css';
 
-.voice-live-transcript { margin-top:24px; padding:18px; border:1px solid var(--gray-alpha-150); border-radius:6px; background:hsl(var(--card)); }.voice-live-transcript h2 { font-size:14px; font-weight:500; margin-bottom:8px; }.voice-live-segments { max-height:300px; overflow:auto; margin-top:14px; }.voice-live-segments article { display:flex; align-items:flex-start; gap:12px; padding:10px 0; border-top:1px solid var(--gray-alpha-100); }.voice-live-segments time { flex-shrink:0; font-size:10px; font-variant-numeric:tabular-nums; color:hsl(var(--muted-foreground)); padding-top:3px; }.voice-live-segments p { font-size:13px; line-height:1.7; }.voice-capture-notes:has(.voice-live-transcript) .voice-textarea { min-height:220px; }
+.voice-audio-welcome{flex:1;display:grid;place-items:center;padding:var(--space-8,2rem);overflow:auto}
+.voice-audio-preparation{width:100%;max-width:36rem;margin:1.5rem auto;padding:1.5rem;border:1px solid hsl(var(--border));border-radius:var(--radius);background:hsl(var(--card));text-align:left;color:hsl(var(--foreground))}
+.voice-audio-preparation h2{font-size:1.25rem;line-height:1.3;margin:.75rem 0}
+.voice-audio-preparation p{font-size:.875rem;line-height:1.6;margin:.75rem 0;color:hsl(var(--muted-foreground))}
+.voice-audio-preparation progress{width:100%;height:.5rem;accent-color:hsl(var(--brand));margin:.75rem 0}
+
+.voice-live-transcript h2 { font-size:14px; font-weight:500; margin-bottom:8px; }.voice-live-segments { max-height:300px; overflow:auto; margin-top:14px; }.voice-live-segments article { display:flex; align-items:flex-start; gap:12px; padding:10px 0; border-top:1px solid var(--gray-alpha-100); }.voice-live-segments time { flex-shrink:0; font-size:10px; font-variant-numeric:tabular-nums; color:hsl(var(--muted-foreground)); padding-top:3px; }.voice-live-segments p { font-size:13px; line-height:1.7; }.voice-capture-notes:has(.voice-live-transcript) .voice-textarea { min-height:220px; }
 
 .voice-workspace { display:flex; height:100vh; overflow:hidden; background:hsl(var(--background)); color:hsl(var(--foreground)); font-size:14px; }
-.voice-sidebar { width:240px; min-width:240px; display:flex; flex-direction:column; background:var(--synth-cream-50); border-right:1px solid var(--gray-alpha-150); }
+.voice-sidebar { width:240px; min-width:240px; display:flex; flex-direction:column; background:var(--synth-rail); border-right:1px solid var(--gray-alpha-150); }
 .voice-brand { height:var(--header-height); display:flex; align-items:center; gap:9px; padding:0 18px; border-bottom:1px solid var(--gray-alpha-150); }
 .voice-brand strong { font-size:14px; letter-spacing:-.03em; }.voice-brand span { display:block; font-size:10px; color:hsl(var(--muted-foreground)); margin-top:-2px; }
 .voice-sidebar-body { flex:1; overflow:auto; padding:20px 12px; }.voice-capture-link { display:flex; align-items:center; gap:8px; background:hsl(var(--primary)); color:hsl(var(--primary-foreground)); padding:10px 12px; border-radius:4px; font-size:12px; font-weight:500; }.voice-capture-link svg:last-child { margin-left:auto; }
@@ -47,7 +54,6 @@
 .voice-processing-meta { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: hsl(var(--muted-foreground)); }
 .voice-processing-meta span { display: inline-flex; align-items: center; gap: 6px; }
 .voice-processing-task[data-state="running"] { border-left: 3px solid hsl(var(--primary)); }
-.voice-state[data-state="succeeded"] { color: #42734b; background: #ecf3ed; border-color: #d2e5d5; }
 .voice-state[data-state="running"], .voice-state[data-state="queued"] { color: hsl(var(--primary)); background: hsl(var(--secondary)); }
 @media (max-width: 800px) { .voice-processing-heading { flex-wrap: wrap; gap: 12px; } }
 
@@ -59,13 +65,7 @@
 .voice-identity-summary strong { font-size: 14px; }
 .voice-identity-summary p { margin: 6px 0 0; }
 /* Corporate access shares the Synth typography, surfaces and buttons. */
-.voice-login{min-height:100vh;display:grid;place-items:center;background:#f7f7f5;padding:32px;color:#292822}
-.voice-login-card{width:min(100%,480px);background:#fff;border:1px solid #e4e3df;border-radius:20px;padding:44px;box-shadow:0 12px 48px #29282208}
-.voice-login-card h1{font-size:30px;line-height:1.2;letter-spacing:-.03em;margin:16px 0}
-.voice-login-card p{color:#716d65;line-height:1.6;margin:16px 0}
-.voice-login-domain{font-size:13px}
-.voice-login-footnote{font-size:12px;border-top:1px solid #eeede8;padding-top:20px}
-.voice-session-bar{display:flex;justify-content:flex-end;align-items:center;gap:10px;padding:6px 20px;background:#fff;border-bottom:1px solid #e4e3df;color:#716d65;font-size:12px}
+.voice-session-bar{display:flex;justify-content:flex-end;align-items:center;gap:10px;padding:6px 20px;background:hsl(var(--card));border-bottom:1px solid var(--gray-alpha-150);color:hsl(var(--muted-foreground));font-size:12px}
 /* Shared Synth UI section rhythm and compact system controls. */
 .voice-card-header{display:flex;align-items:flex-start;gap:12px;margin-bottom:20px}
 .voice-featured-icon{width:36px;height:36px;display:grid;place-items:center;flex-shrink:0;border:1px solid var(--gray-alpha-150);border-radius:8px;background:var(--gray-alpha-50);color:hsl(var(--muted-foreground))}
@@ -81,3 +81,10 @@
 .voice-audio-permissions{margin:20px 24px 0;padding:20px;border:1px solid var(--gray-alpha-150);border-radius:8px;background:hsl(var(--card));flex-shrink:0}.voice-permission-actions{display:flex;flex-wrap:wrap;gap:8px}.voice-audio-permissions .voice-card-header{margin-bottom:16px}
 .voice-workspace{height:100%;min-height:0}.voice-session-shell{height:100vh;display:flex;flex-direction:column}.voice-session-shell>.voice-workspace{flex:1}.voice-enrollment-script{border-left-color:hsl(var(--brand));background:var(--gray-alpha-50);border-radius:0 6px 6px 0}.voice-identity-summary{border-color:var(--gray-alpha-150);border-radius:8px}
 @media(max-width:800px){.voice-call-detector{padding:0 18px}.voice-call-actions{padding-left:0}.voice-card-header{flex-wrap:wrap}.voice-section-actions{align-items:flex-start}.voice-library>.voice-processing-task{padding:20px}}
+.voice-settings-link { margin:0 12px 8px; width:auto; }
+
+.voice-learning-toggle { display:flex; align-items:center; gap:var(--space-3); margin-block:var(--space-4); font-size:var(--text-sm); }
+.voice-learning-toggle input { accent-color:var(--color-accent-brand); }
+.voice-learning-sample { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:var(--space-3); padding-block:var(--space-3); border-bottom:1px solid var(--color-border-subtle); font-size:var(--text-sm); }
+.voice-learning-sample>div { display:flex; gap:var(--space-2); }
+.voice-learning-proposals { margin-block:var(--space-5); }

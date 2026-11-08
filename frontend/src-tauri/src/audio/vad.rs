@@ -28,6 +28,9 @@ pub struct ContinuousVadProcessor {
     in_speech: bool,
     processed_samples: usize,
     speech_start_sample: usize,
+    raw_speech_start_sample: usize,
+    last_emitted_sample: usize,
+    max_live_samples: Option<usize>,
     // State tracking for smart logging
     last_logged_state: bool,
 }
@@ -82,9 +85,31 @@ impl ContinuousVadProcessor {
             in_speech: false,
             processed_samples: 0,
             speech_start_sample: 0,
+            raw_speech_start_sample: 0,
+            last_emitted_sample: 0,
+            max_live_samples: None,
             // Initialize state tracking
             last_logged_state: false,
         })
+    }
+
+    /// Bound live delivery even when a participant speaks without pausing.
+    pub fn new_live(input_sample_rate: u32, redemption_time_ms: u32) -> Result<Self> {
+        let mut processor = Self::new(input_sample_rate, redemption_time_ms)?;
+        processor.max_live_samples = Some(8 * VAD_SAMPLE_RATE as usize);
+        Ok(processor)
+    }
+
+    fn active_samples_through(&self, end: usize) -> Result<Vec<f32>> {
+        let offset = self.speech_start_sample.checked_sub(self.raw_speech_start_sample)
+            .ok_or_else(|| anyhow!("vad_live_clock_invalid"))?;
+        let count = end.checked_sub(self.speech_start_sample)
+            .ok_or_else(|| anyhow!("vad_live_clock_invalid"))?;
+        let active = self.session.get_current_speech();
+        if count == 0 || offset + count > active.len() {
+            return Err(anyhow!("vad_live_audio_incomplete"));
+        }
+        Ok(active[offset..offset+count].to_vec())
     }
 
     /// Process incoming audio samples and return any complete speech segments
@@ -209,7 +234,7 @@ impl ContinuousVadProcessor {
                     real_sample_count
                 ));
             }
-            let samples = active_speech[..real_sample_count].to_vec();
+            let samples = self.active_samples_through(real_end_sample)?;
             let start_ms =
                 (self.speech_start_sample as f64 / VAD_SAMPLE_RATE as f64) * 1000.0;
             let end_ms = (real_end_sample as f64 / VAD_SAMPLE_RATE as f64) * 1000.0;
@@ -273,7 +298,10 @@ impl ContinuousVadProcessor {
                     // The only reader is the end-of-recording flush below, so the bug
                     // surfaced once per recording, on the final segment — which landed at
                     // ~2x the file duration and sorted to the end of the transcript.
-                    self.speech_start_sample = timestamp_ms * VAD_SAMPLE_RATE as usize / 1000;
+                    self.raw_speech_start_sample = timestamp_ms * VAD_SAMPLE_RATE as usize / 1000;
+                    self.speech_start_sample = if self.max_live_samples.is_some() {
+                        self.raw_speech_start_sample.max(self.last_emitted_sample)
+                    } else { self.raw_speech_start_sample };
                     self.current_speech.clear();
                 }
                 VadTransition::SpeechEnd { start_timestamp_ms, end_timestamp_ms, samples } => {
@@ -285,16 +313,25 @@ impl ContinuousVadProcessor {
                     self.in_speech = false;
 
                     // Use samples from VAD transition if available, otherwise use accumulated samples
-                    let speech_samples = if !samples.is_empty() {
+                    let mut speech_samples = if !samples.is_empty() {
                         samples
                     } else {
                         self.current_speech.clone()
                     };
 
+                    let mut segment_start_ms = start_timestamp_ms as f64;
+                    if self.max_live_samples.is_some() {
+                        let original_start = start_timestamp_ms * VAD_SAMPLE_RATE as usize / 1000;
+                        let skip = self.last_emitted_sample.saturating_sub(original_start).min(speech_samples.len());
+                        speech_samples.drain(..skip);
+                        segment_start_ms += skip as f64 / VAD_SAMPLE_RATE as f64 * 1000.0;
+                        self.last_emitted_sample = original_start + skip + speech_samples.len();
+                    }
+
                     if !speech_samples.is_empty() {
                         let segment = SpeechSegment {
                             samples: speech_samples,
-                            start_timestamp_ms: start_timestamp_ms as f64,
+                            start_timestamp_ms: segment_start_ms,
                             end_timestamp_ms: end_timestamp_ms as f64,
                             confidence: 0.9, // VAD confidence
                         };
@@ -316,6 +353,22 @@ impl ContinuousVadProcessor {
         }
 
         self.processed_samples += chunk.len();
+        if self.in_speech && self.max_live_samples.map(|limit| self.processed_samples.saturating_sub(self.speech_start_sample) >= limit).unwrap_or(false) {
+            let samples = self.active_samples_through(self.processed_samples)?;
+            self.speech_segments.push_back(SpeechSegment {
+                samples,
+                start_timestamp_ms: self.speech_start_sample as f64 / VAD_SAMPLE_RATE as f64 * 1000.0,
+                end_timestamp_ms: self.processed_samples as f64 / VAD_SAMPLE_RATE as f64 * 1000.0,
+                confidence: 0.8,
+            });
+            self.last_emitted_sample = self.processed_samples;
+            // Silero keeps its absolute sample clock across reset; trim its next
+            // pre-speech pad against last_emitted_sample to avoid repeated audio.
+            self.session.reset();
+            self.current_speech.clear();
+            self.in_speech = false;
+            self.last_logged_state = false;
+        }
         Ok(())
     }
 }

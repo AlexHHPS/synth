@@ -1,0 +1,8 @@
+# Test-only dependencies for the host evaluation and API tests (never in the service images).
+pytest
+numpy
+soundfile
+pyarrow
+httpx2
+httpx
+pywebrtc-audio==0.2.0

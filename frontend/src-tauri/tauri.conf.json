@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Synth",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "identifier": "dev.synth.voice",
   "build": {
     "frontendDist": "../out",
@@ -84,6 +84,17 @@
               ]
             }
           ]
+        },
+        {
+          "identifier": "call-reminder",
+          "description": "Floating call reminder without filesystem or media permissions",
+          "windows": [
+            "call-reminder"
+          ],
+          "permissions": [
+            "core:event:default",
+            "core:window:allow-start-dragging"
+          ]
         }
       ]
     }
@@ -108,10 +119,11 @@
       "binaries/ffmpeg"
     ],
     "macOS": {
-      "minimumSystemVersion": "14.0",
+      "minimumSystemVersion": "14.2",
       "entitlements": "entitlements.plist",
       "signingIdentity": "-",
-      "hardenedRuntime": true
+      "hardenedRuntime": true,
+      "infoPlist": "meeting-links.plist"
     },
     "windows": {
       "signCommand": "powershell -ExecutionPolicy Bypass -File scripts/sign-windows.ps1 -FilePath %1"

@@ -57,8 +57,15 @@ def main():
             queue.close()
     count = sweep_native(Path.home() / "Library/Application Support/dev.synth.voice/capture/raw")
     voice_count = sweep_native(Path.home() / "Library/Application Support/dev.synth.voice/voice/onboarding/raw", embedding_temporaries=True)
+    # Per-meeting voiceprints live at most 30 days.
+    from synth.speakers.prints import open_prints
+    prints = open_prints()
+    try:
+        expired_prints = prints.expire()
+    finally:
+        prints.close()
     state = runtime / "retention-status.json"
-    state.write_text(json.dumps({"last_run_unix": time.time(), "native_expired_files_removed": count, "completed_capture_files_removed": completed_count, "voice_expired_files_removed": voice_count,
+    state.write_text(json.dumps({"last_run_unix": time.time(), "native_expired_files_removed": count, "completed_capture_files_removed": completed_count, "voice_expired_files_removed": voice_count, "voiceprints_expired": expired_prints,
                                 "ttl_seconds": TTL_SECONDS, "status": "ok"}) + "\n")
 
 

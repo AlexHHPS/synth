@@ -11,8 +11,8 @@ from uuid import uuid4
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
-def normalized(vector):
-    if len(vector) != 256 or any(not isinstance(x, (int, float)) or isinstance(x, bool) or not math.isfinite(x) for x in vector):
+def normalized(vector, dimensions=256):
+    if dimensions not in (128, 256) or len(vector) != dimensions or any(not isinstance(x, (int, float)) or isinstance(x, bool) or not math.isfinite(x) for x in vector):
         raise ValueError("invalid_embedding")
     norm = math.sqrt(sum(x*x for x in vector))
     if not math.isfinite(norm) or norm < 1e-8:

@@ -29,8 +29,8 @@ flags = ['--extra-cflags=-mmacosx-version-min=14.0', '--extra-ldflags=-mmacosx-v
          '--enable-encoder=pcm_s16le,aac,flac',
          '--enable-parser=aac,mpegaudio,flac,opus,vorbis',
          '--enable-filter=aresample,aformat,anull,volume', '--enable-swresample']
-subprocess.run(['rtk', 'proxy', './configure', *flags], cwd=source, check=True)
-subprocess.run(['rtk', 'proxy', 'make', '-j4'], cwd=source, check=True)
+subprocess.run(['./configure', *flags], cwd=source, check=True)
+subprocess.run(['make', '-j4'], cwd=source, check=True)
 binary = ROOT / 'frontend/src-tauri/binaries/ffmpeg-aarch64-apple-darwin'
 binary.parent.mkdir(parents=True, exist_ok=True)
 shutil.copy2(source/'ffmpeg', binary)

@@ -23,6 +23,9 @@ No inventes personas, fechas, compromisos ni datos. Una propuesta no es una deci
 No uses las notas como prueba de una afirmación ausente en la transcripción.
 Incluye todas las tareas explícitas y dudas pendientes; no dupliques items.
 Puedes dejar una sección vacía si no hay hechos de ese tipo. Ordena por aparición.
+Cada segmento trae speaker: el nombre confirmado por el dueño, «Tú» o «Hablante N». Es la única
+identidad válida de quien habla: no atribuyas una intervención a un nombre que no sea su speaker,
+aunque la persona diga su nombre en la transcripción.
 '''
 
 
@@ -106,6 +109,16 @@ def render(document):
     return "\n".join(lines).rstrip() + "\n"
 
 
+def model_view(transcript):
+    """What the text model sees: ids, times, text and a display name; never ids of people or turns."""
+    from synth.server.speakers import display_name, speaker_index
+    order = speaker_index(transcript)
+    return {"language": transcript.get("language", "es"), "duration_ms": transcript.get("duration_ms"),
+            "segments": [{"id": s["id"], "start_ms": s.get("start_ms"), "end_ms": s.get("end_ms"), "text": s["text"],
+                          "speaker": display_name(transcript, s.get("speaker_id"), order)}
+                         for s in transcript["segments"]]}
+
+
 def chunks(transcript, maximum=12_000):
     group, size = [], 0
     for segment in transcript["segments"]:
@@ -121,7 +134,7 @@ def chunks(transcript, maximum=12_000):
 
 def generate(transcript, notes, completed=None, save_checkpoint=None):
     responses = list(completed or [])
-    parts = list(chunks(transcript))
+    parts = list(chunks(model_view(transcript)))
     for index, part in enumerate(parts):
         if index < len(responses):
             continue

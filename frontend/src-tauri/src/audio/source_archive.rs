@@ -44,6 +44,20 @@ fn private_file(path: &Path) -> Result<File> {
     Ok(options.open(path)?)
 }
 
+fn publish_progress(directory: &Path, capture_id: uuid::Uuid, state: &str,
+                    sources: BTreeMap<&str, u64>) -> Result<()> {
+    let value = json!({"version":1,"capture_id":capture_id,"state":state,
+        "clock":"recording_elapsed","sample_rate":48000,"sample_format":"pcm16",
+        "sources":sources});
+    let temporary = directory.join("progress.json.part");
+    let mut file = private_file(&temporary)?;
+    file.write_all(&serde_json::to_vec(&value)?)?;
+    file.sync_all()?;
+    std::fs::rename(temporary, directory.join("progress.json"))?;
+    File::open(directory)?.sync_all()?;
+    Ok(())
+}
+
 impl Track {
     fn new(path: PathBuf) -> Result<Self> {
         let file = private_file(&path)?;
@@ -103,7 +117,6 @@ impl Track {
         self.file.write_all(&bytes)?;
         self.frames += chunk.data.len() as u64;
         self.chunks += 1;
-        if self.chunks % 50 == 0 { self.flush()?; }
         Ok(())
     }
 
@@ -128,6 +141,19 @@ impl Track {
 
 pub struct SourceArchive { thread: JoinHandle<Result<Value>> }
 
+pub fn mark_failed(folder:&Path) -> Result<()> {
+    let directory=folder.join("sources");
+    let value:Value=serde_json::from_slice(&std::fs::read(directory.join("progress.json"))?)?;
+    let id=uuid::Uuid::parse_str(value["capture_id"].as_str().ok_or_else(||anyhow!("source_progress_invalid"))?)?;
+    let sources=value["sources"].as_object().ok_or_else(||anyhow!("source_progress_invalid"))?;
+    let mut frames=BTreeMap::new();
+    for (source,n) in sources { frames.insert(source.as_str(),n.as_u64().ok_or_else(||anyhow!("source_progress_invalid"))?); }
+    // A crashed publication can leave only its private temp file. Keep the last
+    // committed watermark, then tell the reader to stop rather than wait forever.
+    let _=std::fs::remove_file(directory.join("progress.json.part"));
+    publish_progress(&directory,id,"failed",frames)
+}
+
 impl SourceArchive {
     pub fn start(folder: &Path, microphone: bool, system: bool) -> Result<(SourceTap, Self)> {
         let directory = folder.join("sources");
@@ -140,20 +166,36 @@ impl SourceArchive {
         if microphone { tracks.insert("microphone", Track::new(directory.join("microphone.wav.part"))?); }
         if system { tracks.insert("system", Track::new(directory.join("system.wav.part"))?); }
         if tracks.is_empty() { return Err(anyhow!("source_devices_missing")); }
+        let capture_id = uuid::Uuid::new_v4();
+        publish_progress(&directory, capture_id, "open", tracks.iter().map(|(key, track)| (*key, track.frames)).collect())?;
         let (sender, receiver) = sync_channel::<AudioChunk>(128);
         let failed = Arc::new(AtomicBool::new(false));
         let worker_failed = failed.clone();
         let thread = std::thread::spawn(move || -> Result<Value> {
             let result = (|| {
+                let mut pending = 0;
                 while let Ok(chunk) = receiver.recv() {
                     let key = match chunk.device_type { DeviceType::Microphone => "microphone", DeviceType::System => "system" };
                     tracks.get_mut(key).ok_or_else(|| anyhow!("source_device_unexpected"))?.append(&chunk)?;
+                    pending += 1;
+                    if pending >= 50 {
+                        // Publish only after every advertised prefix is durable.
+                        // The reader follows this watermark, never WAV EOF or a
+                        // header being rewritten by the capture thread.
+                        for track in tracks.values_mut() { track.flush()?; }
+                        publish_progress(&directory, capture_id, "open",
+                            tracks.iter().map(|(key, track)| (*key, track.frames)).collect())?;
+                        pending = 0;
+                    }
                 }
                 if worker_failed.load(Ordering::SeqCst) { return Err(anyhow!("source_archive_data_loss")); }
                 let mut sources = BTreeMap::new();
                 for (key, track) in tracks { sources.insert(key, track.close()?); }
-                let manifest = json!({"version":1,"capture_id":uuid::Uuid::new_v4(),"state":"closed",
-                    "clock":"recording_elapsed","sample_format":"pcm16","sources":sources});
+                publish_progress(&directory, capture_id, "closed", sources.iter()
+                    .map(|(key, value)| (*key, value["frames"].as_u64().unwrap())).collect())?;
+                let manifest = json!({"version":1,"capture_id":capture_id,"state":"closed",
+                    "clock":"recording_elapsed","sample_format":"pcm16","sources":sources,
+                    "source_signal":"mono_resampled_pre_live_processing"});
                 let temporary = directory.join("capture.json.part");
                 let mut file = private_file(&temporary)?;
                 file.write_all(serde_json::to_vec_pretty(&manifest)?.as_slice())?;
@@ -177,9 +219,40 @@ impl SourceArchive {
 mod tests {
     use super::*;
     #[test]
+    fn live_watermark_is_published_after_durable_audio_and_keeps_a_stable_capture_id() {
+        let root = tempfile::tempdir().unwrap();
+        let (tap, archive) = SourceArchive::start(root.path(), true, false).unwrap();
+        for index in 0..50 {
+            tap.push(&AudioChunk { data:vec![0.1;480], sample_rate:48000,
+                timestamp:(index+1) as f64/100.0, chunk_id:index, device_type:DeviceType::Microphone }).unwrap();
+        }
+        let path = root.path().join("sources/progress.json");
+        let deadline = std::time::Instant::now()+std::time::Duration::from_secs(2);
+        let committed = loop {
+            let progress: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            if progress["sources"]["microphone"] == 24000 { break progress; }
+            assert!(std::time::Instant::now()<deadline, "Capture did not publish its committed prefix");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert_eq!(committed["state"], "open");
+        let bytes = std::fs::read(root.path().join("sources/microphone.wav.part")).unwrap();
+        assert_eq!(bytes.len(), 44+24000*2);
+        assert_eq!(u32::from_le_bytes(bytes[40..44].try_into().unwrap()), 48000);
+        tap.push(&AudioChunk { data:vec![0.2;480], sample_rate:48000,
+            timestamp:0.51, chunk_id:51, device_type:DeviceType::Microphone }).unwrap();
+        drop(tap);
+        let final_capture = archive.close().unwrap();
+        let final_progress: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(final_progress["sources"]["microphone"], 24480);
+        assert_eq!(final_progress["capture_id"], committed["capture_id"]);
+        assert_eq!(final_capture["capture_id"], committed["capture_id"]);
+    }
+    #[test]
     fn sources_are_distinct_pcm_tracks_and_only_closed_after_flush() {
         let root = tempfile::tempdir().unwrap();
         let (tap, archive) = SourceArchive::start(root.path(), true, true).unwrap();
+        let initial: Value = serde_json::from_slice(&std::fs::read(root.path().join("sources/progress.json")).unwrap()).unwrap();
+        assert_eq!(initial["state"], "open");
         for (kind, value) in [(DeviceType::Microphone, 0.25), (DeviceType::System, -0.5)] {
             tap.push(&AudioChunk { data:vec![value;4800], sample_rate:48000, timestamp:0.1,chunk_id:0,device_type:kind }).unwrap();
         }
@@ -187,6 +260,12 @@ mod tests {
         drop(tap);
         let manifest = archive.close().unwrap();
         assert_eq!(manifest["state"], "closed");
+        let final_progress: Value = serde_json::from_slice(&std::fs::read(root.path().join("sources/progress.json")).unwrap()).unwrap();
+        assert_eq!(initial["capture_id"], manifest["capture_id"]);
+        assert_eq!(final_progress["capture_id"], manifest["capture_id"]);
+        assert_eq!(final_progress["state"], "closed");
+        assert_eq!(final_progress["sources"]["microphone"], 4800);
+        assert_eq!(manifest["source_signal"], "mono_resampled_pre_live_processing");
         let mic = std::fs::read(root.path().join("sources/microphone.wav")).unwrap();
         let system = std::fs::read(root.path().join("sources/system.wav")).unwrap();
         assert_eq!(&mic[..4], b"RIFF");

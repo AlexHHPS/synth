@@ -2,7 +2,6 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::{BTreeMap, BTreeSet}, sync::Mutex, time::{SystemTime, UNIX_EPOCH}};
 use tauri::{Manager, Emitter};
-use tauri_plugin_notification::NotificationExt;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Settings { pub enabled: bool, pub excluded_apps: BTreeSet<String> }
@@ -11,7 +10,7 @@ impl Default for Settings { fn default() -> Self { Self { enabled: true, exclude
 pub struct Hint { pub id: String, pub app_id: String, pub label: String }
 struct Session { hint: Hint, seen: u64, samples: u32, handled: bool, snoozed_until: u64 }
 #[derive(Default)]
-pub struct Detector { settings: Settings, sessions: BTreeMap<String, Session>, error: Option<String> }
+pub struct Detector { settings: Settings, sessions: BTreeMap<String, Session>, error: Option<String>, prepare_requested: bool }
 pub type DetectionState = Mutex<Detector>;
 #[derive(Serialize)]
 pub struct Status { settings: Settings, available: bool, error: Option<String>, pending: Vec<Hint> }
@@ -20,7 +19,7 @@ fn candidate(id: &str, input: bool, output: bool) -> Option<String> {
     if !input || id.is_empty() || id.len() > 256 { return None; }
     let lower = id.to_lowercase();
     if lower == crate::product_identity::identifier() || lower.starts_with(&format!("{}.", crate::product_identity::identifier())) { return None; }
-    if ["meetily", "wispr", "dictation", "com.apple.speech", "com.apple.audio"].iter().any(|x| lower.contains(x)) { return None; }
+    if ["meetily", "wispr", "dictation", "com.granola", "com.apple.speech", "com.apple.audio", "com.apple.corespeech", "com.apple.siri"].iter().any(|x| lower.contains(x)) { return None; }
     for (prefix, label) in [("us.zoom.xos", "Zoom"), ("com.microsoft.teams", "Teams"), ("com.microsoft.teams2", "Teams"), ("com.tinyspeck.slackmacgap", "Slack"), ("com.hnc.discord", "Discord"), ("com.apple.facetime", "FaceTime"), ("com.cisco.webex", "Webex")] {
         if lower == prefix || lower.starts_with(&format!("{prefix}.")) { return Some(label.into()); }
     }
@@ -56,7 +55,12 @@ impl Detector {
     }
     fn action(&mut self, id: &str, action: &str, t: u64) -> Result<(), String> {
         let s = self.sessions.values_mut().find(|s| s.hint.id == id && t.saturating_sub(s.seen) <= 5).ok_or("La llamada ya no está activa.")?;
-        match action { "prepare" | "dismiss" => s.handled = true, "snooze" => s.snoozed_until = t + 60, _ => return Err("Acción no válida.".into()) }
+        match action {
+            "prepare" => {s.handled=true;self.prepare_requested=true;},
+            "dismiss" => s.handled=true,
+            "snooze" => s.snoozed_until=t+60,
+            _ => return Err("Acción no válida.".into())
+        }
         Ok(())
     }
 }
@@ -65,8 +69,21 @@ pub fn synth_detection_status(state: tauri::State<'_, DetectionState>) -> Result
     Ok(state.lock().map_err(|_| "Detector no disponible")?.status(now()))
 }
 #[tauri::command]
-pub fn synth_detection_action(state: tauri::State<'_, DetectionState>, id: String, action: String) -> Result<(), String> {
-    state.lock().map_err(|_| "Detector no disponible")?.action(&id, &action, now())
+pub fn synth_detection_action(app: tauri::AppHandle, state: tauri::State<'_, DetectionState>, id: String, action: String) -> Result<(), String> {
+    state.lock().map_err(|_| "Detector no disponible")?.action(&id, &action, now())?;
+    if action=="prepare" {crate::tray::focus_main_window(&app);}
+    sync_widget(&app);
+    Ok(())
+}
+#[tauri::command]
+pub fn synth_detection_take_prepare(state: tauri::State<'_, DetectionState>) -> Result<bool,String> {
+    let mut detector=state.lock().map_err(|_| "Detector no disponible")?;
+    Ok(std::mem::take(&mut detector.prepare_requested))
+}
+#[tauri::command]
+pub fn synth_detection_widget_expand(window: tauri::WebviewWindow, expanded: bool) -> Result<(),String> {
+    if window.label()!="call-reminder" {return Err("Ventana no válida.".into());}
+    window.set_size(tauri::LogicalSize::new(420.,if expanded {320.} else {96.})).map_err(|_|"No se pudo ajustar el aviso.".into())
 }
 #[tauri::command]
 pub fn synth_detection_settings(app: tauri::AppHandle, state: tauri::State<'_, DetectionState>, settings: Settings) -> Result<(), String> {
@@ -78,7 +95,42 @@ pub fn synth_detection_settings(app: tauri::AppHandle, state: tauri::State<'_, D
     std::fs::rename(temp, path).map_err(|_| "No se pueden guardar los ajustes")?;
     detector.settings = settings;
     detector.sessions.clear();
+    drop(detector);
+    sync_widget(&app);
     Ok(())
+}
+
+/// One independent macOS window, never a banner in the recording workspace.
+fn sync_widget(app: &tauri::AppHandle) {
+    let visible=app.state::<DetectionState>().lock().map(|d|!d.status(now()).pending.is_empty()).unwrap_or(false);
+    let handle=app.clone();
+    let _=app.run_on_main_thread(move || {
+        if !visible {
+            if let Some(window)=handle.get_webview_window("call-reminder") {let _=window.hide();}
+            return;
+        }
+        let window=if let Some(window)=handle.get_webview_window("call-reminder") {Some(window)} else {
+            let position=handle.primary_monitor().ok().flatten().map(|monitor| {
+                let area=monitor.work_area();let scale=monitor.scale_factor();
+                (area.position.x as f64/scale+area.size.width as f64/scale-440.,area.position.y as f64/scale+20.)
+            }).unwrap_or((40.,60.));
+            tauri::WebviewWindowBuilder::new(&handle,"call-reminder",tauri::WebviewUrl::App("call-reminder.html".into()))
+                .title(format!("{} · Aviso de reunión", crate::product_identity::name())).inner_size(420.,96.).position(position.0,position.1)
+                .decorations(false).transparent(true).shadow(false).resizable(false).focused(false).accept_first_mouse(true)
+                .always_on_top(true).visible_on_all_workspaces(true).skip_taskbar(true).visible(false)
+                .build().ok()
+        };
+        if let Some(window)=window {
+            if !window.is_visible().unwrap_or(false) {let _=window.show();}
+        }
+    });
+}
+pub fn dismiss_widget(app: &tauri::AppHandle) {
+    if let Ok(mut detector)=app.state::<DetectionState>().lock() {
+        if let Some(hint)=detector.status(now()).pending.first() {
+            let id=hint.id.clone();let _=detector.action(&id,"dismiss",now());
+        }
+    }
 }
 pub fn start(app: tauri::AppHandle) {
     let state = app.state::<DetectionState>();
@@ -94,7 +146,7 @@ pub fn start(app: tauri::AppHandle) {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             let enabled = app.state::<DetectionState>().lock().map(|d| d.settings.enabled).unwrap_or(false);
-            if !enabled { continue; }
+            if !enabled { sync_widget(&app);continue; }
             let snapshot = tauri::async_runtime::spawn_blocking(probe).await;
             let recording = crate::is_recording().await || crate::voice_onboarding::active();
             let alerts = {
@@ -107,9 +159,8 @@ pub fn start(app: tauri::AppHandle) {
             };
             for hint in alerts {
                 let _ = app.emit("synth-possible-call", &hint);
-                // Successful submission is not proof of OS notification visibility/permission.
-                let _ = app.notification().builder().title("Synth · Posible llamada").body(format!("{} usa el micrófono. Abre Synth para preparar una nota.", hint.label)).show();
             }
+            sync_widget(&app);
         }
     });
 }
@@ -187,4 +238,14 @@ mod mac {
     #[test] fn active_recording_and_disabled_never_prompt() { let mut d=Detector::default(); d.observe(zoom(),100,true); assert!(d.observe(zoom(),102,false).is_empty()); assert!(d.status(102).pending.is_empty()); d.settings.enabled=false; d.observe(zoom(),200,false); assert!(d.status(200).pending.is_empty()); }
     #[test] fn exclusions_and_non_call_input() { let mut d=Detector::default(); d.settings.excluded_apps.insert("us.zoom.xos".into()); d.observe(zoom(),100,false); d.observe(zoom(),102,false); assert!(d.status(102).pending.is_empty()); assert!(candidate("com.open-wispr.app",true,true).is_none()); assert!(candidate("com.google.Chrome",true,false).is_none()); assert!(candidate("com.microsoft.teams2",true,false).is_some()); assert!(candidate("org.unknown.call",true,true).is_some()); }
     #[test] fn sleep_gap_requires_fresh_debounce() { let mut d=Detector::default(); d.observe(zoom(),100,false); assert!(d.observe(zoom(),120,false).is_empty()); assert_eq!(d.observe(zoom(),122,false).len(),1); }
+    #[test] fn system_speech_and_other_recorders_never_prompt() {
+        for id in ["com.apple.CoreSpeech","com.apple.Siri","com.granola.app","dev.synth.voice"] {assert!(candidate(id,true,true).is_none());}
+        assert_eq!(candidate("com.google.Chrome",true,true).as_deref(),Some("Chrome"));
+    }
+    #[test] fn preparing_is_a_one_shot_ui_intent_not_recording_consent() {
+        let mut d=Detector::default();d.observe(zoom(),100,false);d.observe(zoom(),102,false);
+        let id=d.status(102).pending[0].id.clone();d.action(&id,"prepare",102).unwrap();
+        assert!(std::mem::take(&mut d.prepare_requested));assert!(!d.prepare_requested);
+        assert!(d.status(102).pending.is_empty());
+    }
 }

@@ -135,6 +135,19 @@ class QueueRecoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(QueueError, "capture_file_unavailable"):
             self.enqueue(self.capture / "missing.wav")
 
+    def test_account_filter_precedes_history_limit(self):
+        from uuid import uuid4
+        owner, other = str(uuid4()), str(uuid4())
+        mine = self.queue.enqueue({'import': str(self.file)}, 'My older capture', consent_confirmed=True,
+                                  capture_id=str(uuid4()), owner_id=owner)
+        for i in range(101):
+            self.queue.enqueue({'import': str(self.file)}, f'Other account {i}', consent_confirmed=True,
+                               capture_id=str(uuid4()), owner_id=other)
+        own_rows = self.queue.list_owned(owner)
+        self.assertEqual([row['id'] for row in own_rows], [mine['id']])
+        self.assertEqual(len(self.queue.list_owned(other)), 100)
+        self.assertEqual(self.queue.list_owned(str(uuid4())), [])
+
 
 if __name__ == "__main__":
     unittest.main()

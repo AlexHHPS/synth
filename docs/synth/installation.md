@@ -20,6 +20,14 @@ Build the image from the repository root:
 docker build -f synth/deploy/Dockerfile -t synth-api .
 ```
 
+The worker can also use `synth/deploy/Dockerfile.worker`; an optional Hermes
+adapter is built from `synth/deploy/Dockerfile.hermes`. Text calls go straight to
+`OMNIROUTE_URL` unless `HERMES_URL` is set. Schema v10 adds per-actor row level
+security with separate API and worker roles: see [security-rls.md](security-rls.md).
+To show a Google Calendar agenda, create your own OAuth client, add the
+`calendar.events.readonly` scope to your Supabase Google provider and set
+`SYNTH_GOOGLE_CLIENT_ID` / `SYNTH_GOOGLE_CLIENT_SECRET` on the API.
+
 The API runs `python -m uvicorn synth.server.app:app --host 0.0.0.0 --port 18280 --no-access-log`.
 The worker uses the same image and `python -m synth.worker.main`.
 For isolated keys-only development, run
@@ -37,11 +45,12 @@ git clone https://github.com/AlexHHPS/synth.git
 cd synth
 git submodule update --init --recursive
 python3.12 -m venv synth/.toolchains/build-venv
-synth/.toolchains/build-venv/bin/python -m pip install -r synth/deploy/requirements.txt pyinstaller cmake
+synth/.toolchains/build-venv/bin/python -m pip install -r synth/deploy/requirements.txt -r synth/host-build-requirements.txt pyinstaller cmake uv
 pnpm --dir frontend install --frozen-lockfile
 python3 scripts/configure-brand.py --api-url https://voice.example.com --supabase-url https://exampleproject.supabase.co
 synth/.toolchains/build-venv/bin/python synth/scripts/prepare-runtime.py
 synth/.toolchains/build-venv/bin/python synth/scripts/prepare-ffmpeg.py
+synth/.toolchains/build-venv/bin/python synth/scripts/download-vad-model.py
 sh synth/scripts/build-native.sh
 synth/.toolchains/build-venv/bin/python synth/scripts/package-host.py
 synth/.toolchains/build-venv/bin/python synth/scripts/package-pilot.py --format zip
@@ -53,7 +62,9 @@ uses upstream pinned dependencies and a source-built, audio-only FFmpeg executab
 The package includes its exact source archive, build flags and LGPL license.
 Synth invokes the executable as a separate process; it does not link FFmpeg libraries.
 Package-host requires the native build's FFmpeg sidecar, public model files,
-standalone whisper-cli and the Swift acoustic executable. It never reads another
+standalone whisper-cli, `uv`, the Silero VAD model and the Swift acoustic executable.
+The live Qwen speech runtime is not bundled: first-run setup installs its pinned,
+hash-locked packages and weights into the app data folder. It never reads another
 app's installed model directory, session or library.
 
 ## Install a build you trust

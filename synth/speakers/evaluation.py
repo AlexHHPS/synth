@@ -1,6 +1,6 @@
 """Offline evaluation of held-out speaker vectors; never certifies identity."""
 import math
-from .matching import classify
+from .matching import mean_vector, suggest
 
 
 def vector(value):
@@ -41,8 +41,10 @@ def evaluate(dataset):
         expected = t['expected_employee_id']
         if expected is not None and expected not in enrolled:
             raise ValueError('ground_truth_not_enrolled')
-        outcome = classify([vector(v) for v in t['vectors']], clean)
-        candidate = outcome.get('candidate_employee_id') if outcome['state'] == 'candidate' else None
+        vectors = [vector(v) for v in t['vectors']]
+        # Trials are whole clusters: no vectors means too little clean speech.
+        outcome = suggest(mean_vector(vectors) if vectors else None, float('inf') if vectors else 0, clean)
+        candidate = outcome.get('candidate_employee_id') if outcome['state'] in ('suggested', 'ask') else None
         counts['total'] += 1
         counts['known' if expected is not None else 'unknown'] += 1
         if candidate is None:

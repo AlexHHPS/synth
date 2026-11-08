@@ -16,14 +16,15 @@ jobs:
       postgres:
         image: postgres:15
         env:
-          POSTGRES_PASSWORD: synth-ci
+          POSTGRES_HOST_AUTH_METHOD: trust
           POSTGRES_DB: synth_test
-        ports: ['5432:5432']
+        # The PostgreSQL suites refuse any database but this disposable port.
+        ports: ['18289:5432']
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 5s
           --health-timeout 5s --health-retries 10
     env:
-      SYNTH_TEST_DATABASE_URL: postgresql://postgres:synth-ci@127.0.0.1:5432/synth_test
+      SYNTH_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:18289/synth_test
     steps:
       - uses: actions/checkout@v4
         with:

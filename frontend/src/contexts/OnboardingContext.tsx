@@ -110,10 +110,10 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
 
   // The pilot uses the existing OmniRoute route; no local summary model is selected or downloaded.
   const initializeSummaryModelSelection = async (_preferredModel = selectedSummaryModel) => {
-    setRecommendedSummaryModel('local-combo');
-    setSelectedSummaryModel('local-combo');
+    setRecommendedSummaryModel('instant-combo');
+    setSelectedSummaryModel('instant-combo');
     setSummaryModelDownloaded(true); // Legacy field: route configured, not a downloaded LLM.
-    return { selectedSummaryModel: 'local-combo', summaryModelDownloaded: true };
+    return { selectedSummaryModel: 'instant-combo', summaryModelDownloaded: true };
   };
 
   // Load status on mount and initialize database
@@ -368,9 +368,9 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     }
 
     // Summary generation belongs to the queued OmniRoute pipeline.
-    selectedSummaryModel = 'local-combo';
+    selectedSummaryModel = 'instant-combo';
     summaryModelDownloaded = true;
-    setRecommendedSummaryModel('local-combo');
+    setRecommendedSummaryModel('instant-combo');
 
     // Determine the correct step based on verified status
     // New simplified flow: Step 1: Welcome, Step 2: Setup Overview, Step 3: Download Progress, Step 4: Permissions (macOS)
@@ -432,7 +432,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
         saveTimeoutRef.current = undefined;
       }
 
-      const modelToSave = 'local-combo';
+      const modelToSave = 'instant-combo';
       setSelectedSummaryModel(modelToSave);
       await invoke('complete_onboarding', { model: modelToSave });
       setCompleted(true);

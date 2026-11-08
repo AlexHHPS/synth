@@ -398,7 +398,7 @@ impl AudioCapture {
     /// Process audio data directly from callback
     pub fn process_audio_data(&self, data: &[f32]) {
         // Check if still recording
-        if !self.state.is_recording() {
+        if !self.state.is_active() {
             return;
         }
 
@@ -521,6 +521,21 @@ impl AudioCapture {
             }
         }
 
+        let chunk_id = self.chunk_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let timestamp = self.state.get_recording_duration().unwrap_or(0.0);
+        // Archive mono/resampled capture before the live HPF, denoiser and
+        // dynamic gain. Offline AEC and voice embeddings need this source signal.
+        let source = AudioChunk {
+            data: mono_data.clone(),
+            sample_rate: if self.needs_resampling { TARGET_SAMPLE_RATE } else { self.sample_rate },
+            timestamp, chunk_id, device_type: self.device_type.clone(),
+        };
+        if self.state.archive_audio_chunk(&source).is_err() {
+            self.state.report_error(AudioError::ProcessingFailed);
+            warn!("Source archive failed; capture cannot be finalized as complete");
+            return;
+        }
+
         // AUDIO ENHANCEMENT PIPELINE (Microphone Only)
         // Processing order is critical: high-pass → noise suppression → normalization
         // This ensures noise is removed before being amplified by the normalizer
@@ -584,9 +599,6 @@ impl AudioCapture {
             }
         }
 
-        // Create audio chunk with stream-specific timestamp (get ID first for logging)
-        let chunk_id = self.chunk_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-
         // RAW AUDIO: No gain applied here - will be applied AFTER mixing
         // This prevents amplifying system audio bleed-through in the microphone
 
@@ -614,9 +626,6 @@ impl AudioCapture {
         //         warn!("⚠️ System audio producing ZERO audio - check permissions or hardware!");
         //     }
         // }
-
-        // Use global recording timestamp for proper synchronization
-        let timestamp = self.state.get_recording_duration().unwrap_or(0.0);
 
         // RAW AUDIO CHUNK: No gain applied - will be mixed and gained downstream
         // Use 48kHz if we resampled, otherwise use original rate
@@ -707,6 +716,7 @@ pub struct AudioPipeline {
     mixer: ProfessionalAudioMixer,
     // Recording sender for pre-mixed audio
     recording_sender_for_mixed: Option<mpsc::UnboundedSender<AudioChunk>>,
+    incremental_sources: bool,
 }
 
 impl AudioPipeline {
@@ -755,8 +765,9 @@ impl AudioPipeline {
         // indefinitely and withheld live transcript emission, so live and batch
         // deliberately diverge. Bounded live segments under continuous speech
         // are tracked in #756.
-        let vad_processor =
-            ContinuousVadProcessor::new(sample_rate, VAD_REDEMPTION_TIME_MS)?;
+        let vad_processor = if super::transcription::qwen_provider::active() || super::transcription::qwen_provider::waiting() {
+            ContinuousVadProcessor::new_live(sample_rate, VAD_REDEMPTION_TIME_MS)?
+        } else { ContinuousVadProcessor::new(sample_rate, VAD_REDEMPTION_TIME_MS)? };
         info!(
             "VAD-driven pipeline: segments dispatched per speech burst (redemption_time={}ms)",
             VAD_REDEMPTION_TIME_MS
@@ -785,6 +796,7 @@ impl AudioPipeline {
             ring_buffer,
             mixer,
             recording_sender_for_mixed: None,  // Will be set by manager
+            incremental_sources: false,
         })
     }
 
@@ -857,7 +869,7 @@ impl AudioPipeline {
                             let mixed_with_gain = mixed_clean;
 
                             // STEP 3: Send mixed audio for transcription (VAD + Whisper)
-                            match self.vad_processor.process_audio(&mixed_with_gain) {
+                            if !self.incremental_sources { match self.vad_processor.process_audio(&mixed_with_gain) {
                                 Ok(speech_segments) => {
                                     for segment in speech_segments {
                                         let duration_ms = segment.end_timestamp_ms - segment.start_timestamp_ms;
@@ -888,7 +900,7 @@ impl AudioPipeline {
                                 Err(e) => {
                                     warn!("⚠️ VAD error: {}", e);
                                 }
-                            }
+                            } }
 
                             // STEP 4: Send mixed audio for recording (WAV file)
                             if let Some(ref sender) = self.recording_sender_for_mixed {
@@ -923,6 +935,7 @@ impl AudioPipeline {
     }
 
     fn flush_remaining_audio(&mut self) -> Result<()> {
+        if self.incremental_sources { return Ok(()); }
         info!("Flushing remaining audio from pipeline (processed {} chunks)", self.processed_chunks);
 
         // Flush any remaining audio from VAD processor and send segments to transcription
@@ -986,6 +999,7 @@ impl AudioPipelineManager {
         transcription_sender: mpsc::UnboundedSender<AudioChunk>,
         target_chunk_duration_ms: u32,
         sample_rate: u32,
+        incremental_sources: bool,
         recording_sender: Option<mpsc::UnboundedSender<AudioChunk>>,
         mic_device_name: String,
         mic_device_kind: super::device_detection::InputDeviceKind,
@@ -1018,6 +1032,7 @@ impl AudioPipelineManager {
         // CRITICAL FIX: Connect recording sender to receive pre-mixed audio
         // This ensures both mic AND system audio are captured in recordings
         pipeline.recording_sender_for_mixed = recording_sender;
+        pipeline.incremental_sources = incremental_sources;
 
         let handle = tokio::spawn(async move {
             pipeline.run().await
@@ -1105,6 +1120,33 @@ impl Default for AudioPipelineManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn archive_keeps_pre_enhancement_samples_and_pause_excludes_audio() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = RecordingState::new();
+        state.start_recording().unwrap();
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        state.set_audio_sender(sender);
+        let (tap, archive) = super::super::source_archive::SourceArchive::start(directory.path(), true, false).unwrap();
+        state.set_source_tap(tap);
+        let device = AudioDevice::new("Synthetic test input".into(), super::super::devices::DeviceType::Input);
+        let capture = AudioCapture::new(Arc::new(device), state.clone(), 48000, 1, DeviceType::Microphone, None);
+        let raw: Vec<f32> = (0..4800).map(|i| 0.2 + 0.01*(i as f32*0.1).sin()).collect();
+        capture.process_audio_data(&raw);
+        let live = receiver.try_recv().unwrap();
+        assert_ne!(live.data, raw, "Live processing must still run");
+        state.pause_recording().unwrap();
+        capture.process_audio_data(&vec![0.9; 4800]);
+        assert!(receiver.try_recv().is_err());
+        state.detach_source_tap();
+        let manifest = archive.close().unwrap();
+        assert_eq!(manifest["sources"]["microphone"]["frames"], raw.len());
+        let stored = std::fs::read(directory.path().join("sources/microphone.wav")).unwrap();
+        let pcm: Vec<i16> = stored[44..].chunks_exact(2).map(|v| i16::from_le_bytes([v[0], v[1]])).collect();
+        let expected: Vec<i16> = raw.iter().map(|v| (v.clamp(-1.0, 1.0)*32767.0).round() as i16).collect();
+        assert_eq!(pcm, expected);
+    }
 
     #[test]
     fn test_live_vad_redemption_matches_pro_policy() {

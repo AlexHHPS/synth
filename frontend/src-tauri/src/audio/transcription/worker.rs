@@ -37,11 +37,20 @@ pub struct TranscriptUpdate {
     pub sequence_id: u64,
     pub chunk_start_time: f64, // Legacy field, kept for compatibility
     pub is_partial: bool,
-    pub confidence: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
     // NEW: Recording-relative timestamps for playback sync
     pub audio_start_time: f64, // Seconds from recording start (e.g., 125.3)
     pub audio_end_time: f64,   // Seconds from recording start (e.g., 128.6)
     pub duration: f64,          // Segment duration in seconds (e.g., 3.3)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u8>,
 }
 
 // NOTE: get_transcript_history and get_recording_meeting_name functions
@@ -51,7 +60,11 @@ pub struct TranscriptUpdate {
 pub fn start_transcription_task<R: Runtime>(
     app: AppHandle<R>,
     transcription_receiver: tokio::sync::mpsc::UnboundedReceiver<AudioChunk>,
+    capture: Option<super::capture_stream::LiveCapture>,
 ) -> tokio::task::JoinHandle<()> {
+    if super::qwen_provider::active() || super::qwen_provider::waiting() {
+        if let Some(capture)=capture { return super::qwen_provider::start_capture_task(app,transcription_receiver,capture); }
+    }
     tokio::spawn(async move {
         info!("🚀 Starting optimized parallel transcription task - guaranteeing zero chunk loss");
 
@@ -210,11 +223,15 @@ pub fn start_transcription_task<R: Runtime>(
                                             sequence_id,
                                             chunk_start_time: chunk_timestamp, // Legacy compatibility
                                             is_partial,
-                                            confidence: confidence_opt.unwrap_or(0.85), // Default for providers without confidence
+                                            confidence: confidence_opt,
                                             // NEW: Recording-relative timestamps for sync
                                             audio_start_time,
                                             audio_end_time,
                                             duration: chunk_duration,
+                                            capture_id:None,
+                                            evidence_state:None,
+                                            block_id:None,
+                                            revision:None,
                                         };
 
                                         if let Err(e) = app_clone.emit("transcript-update", &update)

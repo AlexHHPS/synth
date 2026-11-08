@@ -73,14 +73,12 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
 
   // NEW: Status setter with logging
   const setStatus = useCallback((status: RecordingStatus, message?: string) => {
-    console.log(`[RecordingState] Status: ${state.status} → ${status}`, message || '');
-
     setState(prev => ({
       ...prev,
       status,
       statusMessage: message,
     }));
-  }, [state.status, state.isRecording, state.isPaused]);
+  }, []);
 
   /**
    * Sync recording state with backend

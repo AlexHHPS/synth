@@ -12,15 +12,19 @@ from fastapi import HTTPException
 from .supabase_auth import auth_mode, authenticate_supabase, allowed_domains, configuration
 
 
-def connect():
-    if os.environ.get("DATABASE_URL"):
+def connect(migration=False):
+    # Runtime services connect as roles that are not owners, so row policies apply to them (v10); only migrations use
+    # the owner's URL. Without MIGRATION_DATABASE_URL a single owner URL serves both, as before v10.
+    url = os.environ.get("MIGRATION_DATABASE_URL") if migration else None
+    url = url or os.environ.get("DATABASE_URL")
+    if url:
         schema = os.environ.get("DATABASE_SCHEMA", "public")
         if not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", schema):
             raise ValueError("database_schema_invalid")
         parameters = {"options": "-c search_path=" + schema}
         if os.environ.get("DATABASE_SSLROOTCERT"):
             parameters.update(sslmode="verify-full", sslrootcert=os.environ["DATABASE_SSLROOTCERT"])
-        return psycopg.connect(os.environ["DATABASE_URL"], connect_timeout=5, row_factory=dict_row, **parameters)
+        return psycopg.connect(url, connect_timeout=5, row_factory=dict_row, **parameters)
     password = Path(os.environ["POSTGRES_PASSWORD_FILE"]).read_text().strip()
     return psycopg.connect(
         host=os.environ.get("POSTGRES_HOST", "postgres"),
@@ -45,7 +49,7 @@ def migrate():
     if mode == "supabase":
         configuration()
         domains = allowed_domains()
-    with connect() as db:
+    with connect(migration=True) as db:
         db.execute("SELECT pg_advisory_xact_lock(18280001)")
         db.execute(Path(__file__).with_name("schema.sql").read_text())
         if mode == "supabase":
@@ -74,7 +78,8 @@ def authenticate(db, token):
     actor = db.execute(
         """SELECT p.id,p.name,p.kind,k.id AS key_id FROM access_keys k
         JOIN principals p ON p.id=k.principal_id
-        WHERE k.token_hash=%s AND k.revoked_at IS NULL AND p.revoked_at IS NULL""",
+        WHERE k.token_hash=%s AND k.revoked_at IS NULL AND p.revoked_at IS NULL
+        AND (k.issued_by IS NULL OR EXISTS (SELECT 1 FROM principals i WHERE i.id=k.issued_by AND i.revoked_at IS NULL))""",
         (digest(token),),
     ).fetchone()
     mode = auth_mode()
@@ -87,6 +92,14 @@ def authenticate(db, token):
         return authenticate_supabase(db, token)
     if not actor:
         raise HTTPException(401, "La clave no es válida o ha sido revocada.")
+    return actor
+
+
+def bind_actor(db, actor):
+    """Name the authenticated principal (and its key) to PostgreSQL: the row policies of v10 scope every later query
+    on this connection to what this actor may see, even if an endpoint forgets a check. One connection per request."""
+    db.execute("SELECT set_config('synth.actor', %s, false), set_config('synth.key_id', %s, false)",
+               (str(actor["id"]), str(actor.get("key_id") or "")))
     return actor
 
 

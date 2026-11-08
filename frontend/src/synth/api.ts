@@ -1,11 +1,14 @@
 import { invoke } from '@tauri-apps/api/core';
+import { mockEnabled, mockRequest } from './mock';
 
 /** The native layer owns the credential and approved library backend URL. */
 export function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  if (mockEnabled()) return mockRequest<T>(method, path, body);
   return invoke<T>('synth_desktop_request', { method, path, body: body ?? null });
 }
 
 export function pipelineRequest<T>(method: string, path: string, body?: unknown): Promise<T> {
+  if (mockEnabled()) return mockRequest<T>(method, path === '/v1/tasks' ? '/v1/tasks/pipeline' : path, body);
   return invoke<T>('synth_pipeline_request', { method, path, body: body ?? null });
 }
 
@@ -13,7 +16,7 @@ export interface CaptureTask {
   id: string; title?: string; folder_id?: string | null; capture_id?: string | null; state: string; stage: string; attempts: number; error_code: string | null;
   created_at: number; updated_at: number; meeting_id: string | null; job_id: string | null;
   identity: { state: string; reason?: string } | null;
-  transcript_version?: number; capture_state?: string; can_retry?: boolean;
+  transcript_version?: number; capture_state?: string; can_retry?: boolean; voice_confirmation_pending?: boolean;
 }
 
 export interface Integration {
@@ -39,10 +42,13 @@ export interface Evidence { segment_id: string; quote: string }
 export interface Statement {
   text: string; evidence: Evidence[]; owner?: string | null; due_date?: string | null;
 }
+export interface LegacyDocumentContent {
+  summary: Statement[]; decisions: Statement[]; actions: Statement[]; open_questions: Statement[];
+}
 export interface Document {
   version: number; transcript_version: number; content_hash: string;
   model_fingerprint: string; markdown: string;
-  content: { summary: Statement[]; decisions: Statement[]; actions: Statement[]; open_questions: Statement[] };
+  content: LegacyDocumentContent | { schema_version: number; [field: string]: unknown };
 }
 export interface SearchHit { meeting_id: string; transcript_version: number; evidence: Evidence[] }
 export function message(error: unknown): string {

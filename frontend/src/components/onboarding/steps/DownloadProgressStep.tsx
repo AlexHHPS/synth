@@ -71,7 +71,7 @@ export function DownloadProgressStep() {
         </div>
         <div>
           <h2 className="font-medium">Actas en OmniRoute</h2>
-          <p className="text-sm text-muted-foreground">local-combo · el texto puede procesarse fuera del Mac</p>
+          <p className="text-sm text-muted-foreground">Servicio de actas de tu organización · el texto se procesa fuera del Mac</p>
           <p className="text-sm mt-2">{checking ? 'Comprobando servicio…' : serviceReady ? 'Servicio de actas disponible' : 'Servicio no disponible'}</p>
         </div>
         {error && <p role="alert" className="text-sm text-destructive">{error}</p>}

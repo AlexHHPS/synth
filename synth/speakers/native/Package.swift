@@ -11,5 +11,5 @@ let package = Package(
     ],
     targets: [.executableTarget(name: "SynthSpeakers", dependencies: [
         .product(name: "FluidAudio", package: "FluidAudio")
-    ])]
+    ]), .testTarget(name: "SynthSpeakersTests", dependencies: ["SynthSpeakers"])]
 )

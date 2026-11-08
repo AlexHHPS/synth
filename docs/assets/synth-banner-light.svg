@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="440" viewBox="0 0 1280 440" role="img" aria-labelledby="t d">
+<title id="t">Synth — Meeting notes, on your terms</title>
+<desc id="d">A meeting travels from local audio on the Mac, to a transcript in speaker turns, to minutes where every point cites its source.</desc>
+<rect width="1280" height="440" rx="20" fill="#f8fafc"/>
+<rect x=".5" y=".5" width="1279" height="439" rx="20" fill="none" stroke="#dbe3ee"/>
+<rect x="64" y="72" width="56" height="56" rx="14" fill="#2563eb"/>
+<g stroke="#fff" stroke-width="4.5" stroke-linecap="round"><path d="M79 95v10M88 88v24M97 82v36M106 91v18"/></g>
+<g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif"><text x="64" y="214" fill="#0f172a" font-size="64" font-weight="700" letter-spacing="-2.5">Synth</text><text x="66" y="258" fill="#334155" font-size="24">Meeting notes, on your terms.</text><text x="66" y="300" fill="#64748b" font-size="16">Audio stays on your Mac.</text><text x="66" y="324" fill="#64748b" font-size="16">Knowledge lives in a library you control.</text></g>
+<g font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="12" letter-spacing=".8" fill="#64748b"><text x="66" y="372">OPEN SOURCE · WHITE LABEL · REST / MCP</text></g>
+<rect x="500" y="96" width="216" height="248" rx="14" fill="#ffffff" stroke="#dbe3ee"/>
+<text x="520" y="128" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="11" letter-spacing="1" fill="#64748b">ON YOUR MAC</text>
+<rect x="740" y="96" width="216" height="248" rx="14" fill="#ffffff" stroke="#dbe3ee"/>
+<text x="760" y="128" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="11" letter-spacing="1" fill="#64748b">TRANSCRIPT</text>
+<rect x="980" y="96" width="216" height="248" rx="14" fill="#ffffff" stroke="#dbe3ee"/>
+<text x="1000" y="128" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="11" letter-spacing="1" fill="#64748b">MINUTES</text>
+<path d="M720 220h16" stroke="#2563eb" stroke-width="2"/><path d="M732 215l6 5-6 5" fill="none" stroke="#2563eb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M960 220h16" stroke="#2563eb" stroke-width="2"/><path d="M972 215l6 5-6 5" fill="none" stroke="#2563eb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="524.0" y="209.0" width="5" height="10" rx="2.5" fill="#cbd5e1"/>
+<rect x="534.5" y="203.0" width="5" height="22" rx="2.5" fill="#cbd5e1"/>
+<rect x="545.0" y="195.0" width="5" height="38" rx="2.5" fill="#cbd5e1"/>
+<rect x="555.5" y="205.0" width="5" height="18" rx="2.5" fill="#cbd5e1"/>
+<rect x="566.0" y="188.0" width="5" height="52" rx="2.5" fill="#2563eb"/>
+<rect x="576.5" y="199.0" width="5" height="30" rx="2.5" fill="#2563eb"/>
+<rect x="587.0" y="182.0" width="5" height="64" rx="2.5" fill="#2563eb"/>
+<rect x="597.5" y="193.0" width="5" height="42" rx="2.5" fill="#2563eb"/>
+<rect x="608.0" y="202.0" width="5" height="24" rx="2.5" fill="#2563eb"/>
+<rect x="618.5" y="185.0" width="5" height="58" rx="2.5" fill="#2563eb"/>
+<rect x="629.0" y="196.0" width="5" height="36" rx="2.5" fill="#2563eb"/>
+<rect x="639.5" y="206.0" width="5" height="16" rx="2.5" fill="#cbd5e1"/>
+<rect x="650.0" y="191.0" width="5" height="46" rx="2.5" fill="#cbd5e1"/>
+<rect x="660.5" y="200.0" width="5" height="28" rx="2.5" fill="#cbd5e1"/>
+<rect x="671.0" y="208.0" width="5" height="12" rx="2.5" fill="#cbd5e1"/>
+<rect x="681.5" y="197.0" width="5" height="34" rx="2.5" fill="#cbd5e1"/>
+<rect x="692.0" y="204.0" width="5" height="20" rx="2.5" fill="#cbd5e1"/>
+<rect x="520" y="268" width="96" height="22" rx="11" fill="#eef2f8"/><text x="530" y="283" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" fill="#334155">Microphone</text>
+<rect x="520" y="296" width="111" height="22" rx="11" fill="#eef2f8"/><text x="530" y="311" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" fill="#334155">System audio</text>
+<text x="760" y="160" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" font-weight="600" fill="#2563eb">You</text><text x="906" y="160" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="10" fill="#64748b" text-anchor="end">00:12</text><rect x="760" y="170" width="150" height="7" rx="3.5" fill="#cbd5e1"/><rect x="760" y="183" width="104" height="7" rx="3.5" fill="#cbd5e1"/>
+<text x="760" y="218" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" font-weight="600" fill="#334155">Speaker 2</text><text x="906" y="218" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="10" fill="#64748b" text-anchor="end">01:29</text><rect x="760" y="228" width="120" height="7" rx="3.5" fill="#cbd5e1"/><rect x="760" y="241" width="74" height="7" rx="3.5" fill="#cbd5e1"/>
+<text x="760" y="276" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" font-weight="600" fill="#2563eb">You</text><text x="906" y="276" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="10" fill="#64748b" text-anchor="end">02:46</text><rect x="760" y="286" width="160" height="7" rx="3.5" fill="#cbd5e1"/><rect x="760" y="299" width="114" height="7" rx="3.5" fill="#cbd5e1"/>
+<text x="1000" y="160" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" font-weight="600" fill="#0f172a">Decision</text><rect x="1000" y="170" width="128" height="7" rx="3.5" fill="#cbd5e1"/><rect x="1136" y="165" width="30" height="17" rx="8.5" fill="#dbeafe"/><text x="1151" y="177" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="10" fill="#1d4ed8" text-anchor="middle">t3</text>
+<text x="1000" y="218" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" font-weight="600" fill="#0f172a">Task · Ana · Fri</text><rect x="1000" y="228" width="104" height="7" rx="3.5" fill="#cbd5e1"/><rect x="1112" y="223" width="30" height="17" rx="8.5" fill="#dbeafe"/><text x="1127" y="235" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="10" fill="#1d4ed8" text-anchor="middle">t7</text>
+<text x="1000" y="276" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" font-weight="600" fill="#0f172a">Open question</text><rect x="1000" y="286" width="116" height="7" rx="3.5" fill="#cbd5e1"/><rect x="1124" y="281" width="30" height="17" rx="8.5" fill="#dbeafe"/><text x="1139" y="293" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="10" fill="#1d4ed8" text-anchor="middle">t9</text>
+<text x="500" y="386" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="13" fill="#64748b">Only text leaves the Mac, to the gateway you configure.</text>
+</svg>

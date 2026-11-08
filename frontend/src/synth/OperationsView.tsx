@@ -12,13 +12,30 @@ const states: Record<string, string> = {
 const stages: Record<string, string> = {
   queued: 'Esperando turno', normalized: 'Audio preparado', asr: 'Transcripción completada',
   diarization: 'Voces separadas', canonical: 'Transcripción preparada', identified: 'Reconocimiento de voces completado', uploaded: 'Generación del acta',
+  confirming_voices: 'Guardando las voces confirmadas',
 };
 const errors: Record<string, string> = {
+  generation_context_changed: 'La carpeta o sus permisos han cambiado. La transcripción se conserva; reintenta el acta con el contexto actual.',
   api_unavailable: 'No se puede conectar con el servicio de reuniones. Comprueba que está iniciado.',
   document_job_failed: 'No se pudo generar el acta. Puedes reintentar sin volver a transcribir.',
   document_wait_timeout: 'La generación del acta tarda más de lo esperado. Puedes reintentar para consultar el resultado.',
   asr_failed: 'No se pudo transcribir el audio. Revisa la grabación antes de reintentar.',
+  host_pipeline_failed: 'El procesamiento local se ha interrumpido. La captura y el texto guardado se conservan; reintenta para continuar.',
+  audio_setup_not_ready: 'Espera a que termine la preparación automática del audio y reintenta el envío.',
+  audio_normalization_timeout: 'La preparación del audio ha superado el tiempo de espera. La grabación se conserva para reintentar.',
   batch_transcription_repetitive: 'La retranscripción contiene demasiadas repeticiones y no hay una copia en directo válida. No se ha publicado como transcripción definitiva.',
+  batch_cross_source_duplication: 'La retranscripción duplica intervenciones entre el micrófono y el audio del sistema y no hay una copia en directo válida. Se conserva el audio para reintentar.',
+  qwen_runtime_missing: 'No se encuentra el motor local de Qwen. Se conserva la grabación para reintentar.',
+  qwen_model_missing: 'Faltan archivos del modelo local de Qwen. Se conserva la grabación para reintentar.',
+  qwen_model_hash_mismatch: 'No se han podido verificar los archivos del modelo local de Qwen.',
+  qwen_asr_failed: 'Qwen no ha podido procesar la grabación. Se conserva el audio para reintentar.',
+  qwen_token_limit_reached: 'Qwen no ha podido completar un fragmento de audio. El progreso y la grabación se conservan para reintentar.',
+  qwen_asr_incomplete: 'Qwen ha devuelto un fragmento incompleto. El progreso y la grabación se conservan para reintentar.',
+  qwen_alignment_invalid_time: 'El texto se ha reconocido, pero Qwen no ha podido ajustar sus tiempos. Se conserva el audio para reintentar.',
+  qwen_alignment_nonmonotonic: 'El texto se ha reconocido, pero Qwen no ha podido ordenar sus tiempos. Se conserva el audio para reintentar.',
+  qwen_alignment_incomplete: 'Qwen no ha podido completar los tiempos del texto. Se conserva el audio para reintentar.',
+  qwen_alignment_text_mismatch: 'Qwen no ha podido vincular el texto con el audio. Se conserva el audio para reintentar.',
+  qwen_asr_timeout: 'Qwen ha superado el tiempo de procesamiento. Se conserva el audio para reintentar.',
   capture_file_changed: 'La grabación ha cambiado desde que se guardó. No se ha enviado al procesamiento.',
   capture_file_unavailable: 'La grabación ya no está disponible. Puede haber vencido su conservación temporal.',
   speaker_inference_failed: 'No se pudo separar las voces de la grabación.',
@@ -68,7 +85,7 @@ export function OperationsView({ refreshToken, onOpen, folders = [], meetings = 
   const counts = { active: tasks.filter(t => activeStates.includes(t.state)).length, ready: tasks.filter(t => t.state === 'succeeded').length, failed: tasks.filter(t => t.state === 'failed').length };
   return <div className="voice-library">
     <div className="voice-page-heading"><div><p className="voice-eyebrow">TU SISTEMA</p><h1>Procesamiento</h1><p>Consulta el progreso y recupera conversaciones interrumpidas.</p></div><Activity size={22} /></div>
-    <div className="voice-system-summary"><div><strong>Audio en este Mac</strong><p>Transcripción y separación de voces locales. El acta usa OmniRoute y su proveedor configurado.</p></div><span className="voice-state">{worker === 'idle' ? 'Disponible' : worker === 'running' ? 'Trabajando' : worker ? 'Recuperando servicio' : 'Conectando…'}</span></div>
+    <div className="voice-system-summary"><div><strong>Audio en este Mac</strong><p>Transcripción y separación de voces locales. El acta usa OmniRoute y su proveedor configurado.</p></div><span className="voice-state">{worker === 'idle' ? 'Disponible' : worker === 'running' ? 'Trabajando' : worker === 'audio_in_use' ? 'Audio en uso' : worker === 'preparing_audio' ? 'Preparando audio' : worker ? 'Recuperando servicio' : 'Conectando…'}</span></div>
     <div className="voice-processing-counts"><span><LoaderCircle size={14} /> {counts.active} en curso</span><span><CircleCheck size={14} /> {counts.ready} disponibles</span>{counts.failed > 0 && <span>{counts.failed} requieren atención</span>}</div>
     <details className="voice-processing-info"><summary>Audio y perfiles de voz</summary><p className="voice-notice">Si has creado tu perfil, las transcripciones muestran coincidencias locales de piloto. La identificación de empleados requiere completar la calibración. El audio temporal se conserva como máximo 24 horas.</p></details>
     {error && <div role="alert" className="voice-alert">{error}</div>}
@@ -82,7 +99,7 @@ export function OperationsView({ refreshToken, onOpen, folders = [], meetings = 
       return <article key={task.id} className="voice-processing-task" data-state={task.state}>
       <div className="voice-processing-heading"><div className="voice-processing-identity"><div className="voice-row-icon"><FileAudio size={19} /></div><div><h2>{title}</h2><div className="voice-processing-meta"><span><CalendarDays size={13} /><time dateTime={date.toISOString()}>{date.toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' })} · {date.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}</time></span><span><FolderClosed size={13} />{folderName || 'Privada · Sin carpeta'}</span></div></div></div><span className="voice-state" data-state={task.state}>{states[task.state] ?? 'Estado desconocido'}</span></div>
       <p>{task.state === 'succeeded' ? 'Transcripción y acta guardadas en tu biblioteca.' : stages[task.stage] ?? 'Consultando etapa'}{task.transcript_version ? ` · Transcripción v${task.transcript_version}` : ''} · Intento {task.attempts}</p>
-      {task.error_code && <p className="voice-alert">{errors[task.error_code] ?? 'El procesamiento se ha detenido. Comprueba el servicio y reintenta cuando esté disponible.'}</p>}
+      {task.error_code && <p className="voice-alert">{task.voice_confirmation_pending ? 'No se han podido guardar las voces confirmadas. La transcripción se conserva; reintenta para completar el guardado.' : errors[task.error_code] ?? 'El procesamiento se ha detenido. Comprueba el servicio y reintenta cuando esté disponible.'}</p>}
       <div className="flex flex-wrap gap-2">
         {task.meeting_id && <Button size="sm" variant="outline" onClick={() => onOpen(task.meeting_id!)}>Abrir reunión <ArrowUpRight size={14} /></Button>}
         {task.state === 'failed' && <Button size="sm" variant="outline" loading={busy === task.id} disabled={busy !== null} onClick={() => void action(task, 'retry')}><RefreshCw size={14} /> Reintentar</Button>}

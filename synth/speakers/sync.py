@@ -22,12 +22,15 @@ def catalog(actor):
     profiles = local_profiles(actor)
     state = "local_only"
     api = LocalAPI()
+    api.expected_principal = str(actor['id'])
     if api.auth_mode == "supabase":
         try:
             remote = api.call("GET", "/v1/voice/profiles")
+            api.assert_current_principal()
             profiles = [{"id": str(UUID(p["id"])), "employee_id": str(UUID(p["employee_id"])),
                          "name": p["name"], "model": p["model"], "updated_at": p["updated_at"],
-                         "shared": True,
+                         "shared": True, "derived": p.get("derived", False),
+                         "root_profile_id": p.get("root_profile_id"),
                          "vector": normalized(p["embedding"])} for p in remote["profiles"]]
             ids = {p["id"] for p in profiles}
             profiles += [p for p in local_profiles(actor) if p["id"] not in ids]
@@ -48,13 +51,16 @@ def share(actor, profile_id, consent):
     profile = next((p for p in local_profiles(actor) if p["id"] == profile_id), None)
     if profile is None:
         raise ValueError("profile_missing")
-    return LocalAPI().call("PUT", "/v1/voice/profiles", {"id": profile_id,
+    api = LocalAPI()
+    api.expected_principal = str(actor['id'])
+    return api.call("PUT", "/v1/voice/profiles", {"id": profile_id,
         "model": profile["model"], "embedding": profile["vector"], "consent_confirmed": True})
 
 
-def unshare(profile_id):
+def unshare(actor, profile_id):
     from synth.worker.desktop_pipeline import LocalAPI
     api = LocalAPI()
+    api.expected_principal = str(actor['id'])
     if api.auth_mode != "supabase":
         return
     try:

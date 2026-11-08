@@ -44,6 +44,13 @@ def fetch(url, method="GET", body=None, headers=None):
             if len(data)>131072: raise ValueError("auth_response_limit")
             return json.loads(data) if data else {}
     except urllib.error.HTTPError as error:
+        if url == API+'/v1/calendar/connection':
+            try:
+                detail = json.loads(error.read(16384)).get('detail')
+                if detail in ('calendar_api_not_enabled','calendar_read_permission_required','calendar_reconnect_required','calendar_client_configuration_invalid'):
+                    raise ValueError(detail) from None
+            except (AttributeError, json.JSONDecodeError):
+                pass
         raise ValueError("auth_http_" + str(error.code)) from None
     except (OSError, ValueError) as error:
         if isinstance(error, ValueError) and str(error)=="auth_response_limit": raise
@@ -120,21 +127,51 @@ def state():
     if config.get("mode")!="supabase": return {"mode":"keys","signed_in":True}
     with session_lock(): session=read_session()
     return {"mode":"supabase","signed_in":session is not None,"email":session.get("email") if session else None,
+        "principal_id":session.get("principal_id") if session else None,
         "allowed_domains":config["allowed_domains"],"flow_state":FLOW.get("state") if FLOW else None,
         "error_code":FLOW.get("error_code") if FLOW else None}
 
 
-def begin():
+def capture_identity():
+    """Local ownership check; recording must not poll the cloud auth config.
+
+    Uses the same persisted auth mode as LocalAPI. Keychain is read afresh so
+    logout/account changes fence the next delivery without caching credentials.
+    """
+    path = APPDATA / 'backend-config.json'
+    config = json.loads(path.read_text()) if path.is_file() else {}
+    mode = config.get('auth_mode', 'keys')
+    if mode == 'keys':
+        return {'mode': 'keys', 'signed_in': True}
+    if mode != 'supabase':
+        raise ValueError('auth_configuration_invalid')
+    with session_lock():
+        session = read_session()
+    return {'mode': 'supabase', 'signed_in': session is not None,
+            'principal_id': session.get('principal_id') if session else None}
+
+
+def begin(calendar=False):
     global FLOW
     config=configuration()
     if config.get("mode")!="supabase": raise ValueError("auth_not_enabled")
     with GATE:
+        previous = access() if calendar else None
+        if calendar:
+            state = fetch(API+'/v1/calendar',headers={'Authorization':'Bearer '+previous['access_token']})
+            if state.get('configured') is not True:
+                raise ValueError('calendar_client_configuration_invalid')
         verifier=secrets.token_urlsafe(48); nonce=secrets.token_urlsafe(32)
         challenge=base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
         redirect="http://127.0.0.1:18383/auth/callback/"+nonce
-        FLOW={"nonce":nonce,"verifier":verifier,"expires_at":time.time()+300,"state":"waiting","config":config}
-        url=SUPABASE+"/auth/v1/authorize?"+urllib.parse.urlencode({"provider":"google","redirect_to":redirect,
-            "code_challenge":challenge,"code_challenge_method":"s256","scopes":"openid email profile","prompt":"select_account"})
+        FLOW={"nonce":nonce,"verifier":verifier,"expires_at":time.time()+300,"state":"waiting","config":config,
+              "calendar":calendar, "principal_id": previous['principal_id'] if previous else None}
+        params={"provider":"google","redirect_to":redirect,
+            "code_challenge":challenge,"code_challenge_method":"s256","scopes":"openid email profile","prompt":"select_account"}
+        if calendar:
+            params.update(scopes='openid email profile https://www.googleapis.com/auth/calendar.events.readonly',
+                          access_type='offline', prompt='consent select_account')
+        url=SUPABASE+"/auth/v1/authorize?"+urllib.parse.urlencode(params)
         subprocess.run(["/usr/bin/open",url],check=True,capture_output=True,timeout=10)
         return {"state":"waiting"}
 
@@ -151,8 +188,22 @@ def callback(path):
         if "error" in query or len(query.get("code",[]))!=1: raise ValueError("auth_google_denied")
         value=fetch(SUPABASE+"/auth/v1/token?grant_type=pkce","POST",
             {"auth_code":query["code"][0],"code_verifier":flow["verifier"]},{"apikey":flow["config"]["publishable_key"]})
-        with session_lock(): accept_tokens(value,flow["config"])
-        flow.update(state="signed_in",error_code=None)
+        with session_lock():
+            # Token exchange runs outside the session lock. Logout or a newer
+            # login can invalidate this flow while its network request finishes.
+            if FLOW is not flow or flow['state'] != 'completing' or flow['expires_at'] < time.time():
+                raise ValueError('auth_callback_invalid')
+            previous = read_session() if flow.get('calendar') else None
+            if flow.get('calendar') and (not previous or previous['principal_id'] != flow['principal_id']):
+                raise ValueError('auth_identity_changed')
+            session = accept_tokens(value,flow["config"],previous) if previous else accept_tokens(value,flow["config"])
+            if flow.get('calendar'):
+                if not value.get('provider_token') or not value.get('provider_refresh_token'):
+                    raise ValueError('calendar_offline_permission_required')
+                fetch(API+'/v1/calendar/connection','POST',
+                    {'access_token':value['provider_token'],'refresh_token':value['provider_refresh_token']},
+                    {'Authorization':'Bearer '+session['access_token']})
+            flow.update(state="signed_in",error_code=None)
     except ValueError as error:
         flow.update(state="failed",error_code=str(error)); raise
     finally:
@@ -162,11 +213,12 @@ def callback(path):
 def logout():
     global FLOW
     with session_lock():
+        # Invalidate browser callbacks even when remote revocation fails.
+        FLOW=None
         session=read_session()
         if session:
             try: fetch(SUPABASE+"/auth/v1/logout?scope=local","POST",{}, {"apikey":session["publishable_key"],"Authorization":"Bearer "+session["access_token"]})
             finally:
                 result=subprocess.run(["/usr/bin/security","delete-generic-password","-s",SERVICE,"-a",ACCOUNT],capture_output=True,timeout=10)
                 if result.returncode: raise ValueError("auth_keychain_delete_failed")
-        FLOW=None
     return {"signed_in":False}

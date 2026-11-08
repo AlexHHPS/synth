@@ -1,4 +1,5 @@
-"""One inference lane with fenced leases, idempotency and explicit cancellation."""
+"""Bounded document jobs with fenced leases, idempotency and cancellation."""
+import os
 from uuid import uuid4
 from psycopg.types.json import Jsonb
 
@@ -17,15 +18,28 @@ def submit(db, meeting_id, kind, idempotency_key, payload):
     return old["id"], False
 
 
-def claim(db, worker, lease_seconds=120):
-    # Serialize claim decisions, rather than overlapping acoustic/LLM jobs.
+def capacity():
+    value = int(os.environ.get("SYNTH_DOCUMENT_CONCURRENCY", "2"))
+    if not 1 <= value <= 8:
+        raise ValueError("invalid_document_capacity")
+    return value
+
+
+def claim(db, worker, lease_seconds=120, max_running=None):
+    limit = capacity() if max_running is None else max_running
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 8:
+        raise ValueError("invalid_document_capacity")
+    # Serialize admission across replicas; each claimed job retains its own lease.
     db.execute("SELECT pg_advisory_xact_lock(18280002)")
-    if db.execute("SELECT 1 FROM jobs WHERE state='running' AND lease_until>now() LIMIT 1").fetchone():
+    active = db.execute("SELECT count(*) AS n FROM jobs WHERE state='running' AND lease_until>now()").fetchone()["n"]
+    if active >= limit:
         return None
     candidate = db.execute("""SELECT id,meeting_id FROM jobs WHERE
         ((state='queued' AND available_at<=now()) OR (state='running' AND lease_until<=now()))
         AND (payload->>'transcript_version')::int=
             (SELECT max(version) FROM transcript_versions WHERE meeting_id=jobs.meeting_id)
+        AND NOT EXISTS (SELECT 1 FROM jobs other WHERE other.meeting_id=jobs.meeting_id
+            AND other.id<>jobs.id AND other.state='running' AND other.lease_until>now())
         ORDER BY created_at,id LIMIT 1""").fetchone()
     if not candidate:
         return None

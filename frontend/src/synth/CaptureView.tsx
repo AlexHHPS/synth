@@ -2,31 +2,49 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Field } from '@base-ui/react/field';
-import { Mic, Monitor, Pause, Play, Square } from 'lucide-react';
+import dynamic from 'next/dynamic';
+import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
+import { AudioLines, CalendarDays, ChevronDown, FolderPlus, Mic, Monitor, Pause, Play, Settings2, Square, Users } from 'lucide-react';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
-import { useTranscripts } from '@/contexts/TranscriptContext';
+import { useLiveCapture } from './useLiveCapture';
+import { useLiveVoices } from './useLiveVoices';
+import { LiveVoices, voiceForSegment } from './LiveVoices';
 import { recordingService } from '@/services/recordingService';
 import { Button } from './design-system/button';
-import { FormField } from './design-system/form-field';
+import { MeetingPanel } from './MeetingPanel';
+const MeetingNotes = dynamic(() => import('./MeetingNotes'), { ssr: false });
 import { Folder, message, pipelineRequest, time } from './api';
-import { CAPTURE_MODE, CAPTURE_OPTIONS, handOffCapture, readCapture, isCaptureHandoffReady } from './capture';
+import { CAPTURE_MODE, writeCapture, handOffCapture, readCapture, isCaptureHandoffReady } from './capture';
+import type { CalendarPreparation } from './CalendarHome';
 
 interface Device { name: string; device_type: 'Input' | 'Output' }
 
-export function CaptureView({ folders, onQueued }: { folders: Folder[]; onQueued: () => void }) {
+async function prepareContext(eventId: string | undefined, folderId: string) {
+  let timer: ReturnType<typeof setTimeout>;
+  const operation = (async () => {
+    await pipelineRequest('POST', '/v1/capture/context', { calendar_event_id: eventId ?? null, folder_id: folderId || null });
+  })();
+  await Promise.race([operation.catch(() => undefined), new Promise<void>(resolve => { timer = setTimeout(resolve, 2000); })]);
+  clearTimeout(timer!);
+}
+
+export function CaptureView({ folders, onQueued, prepared }: { folders: Folder[]; onQueued: () => void; prepared?: CalendarPreparation | null }) {
   const pending = readCapture();
-  const [title, setTitle] = useState(pending?.title ?? 'Nueva nota');
-  const [folder, setFolder] = useState(pending?.folder_id ?? '');
+  const [title, setTitle] = useState(pending?.title ?? prepared?.event.title ?? 'Nueva nota');
+  const [folder, setFolder] = useState(pending?.folder_id ?? prepared?.folder_id ?? '');
+  const calendarEventId = pending?.calendar_event_id ?? (pending ? undefined : prepared?.event_id);
   const [notes, setNotes] = useState(pending?.notes ?? '');
   const [consent, setConsent] = useState(false);
   const [devices, setDevices] = useState<Device[]>([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const latch = useRef(false);
+  const [panel, setPanel] = useState<'transcript' | 'voices' | null>(null);
+  const [audioOptions, setAudioOptions] = useState(false);
   const { selectedDevices, setSelectedDevices } = useConfig();
-  const { clearTranscripts, setMeetingTitle, transcripts } = useTranscripts();
+  const { clear: clearTranscripts, transcripts, captureId, error: liveError, waiting: waitingForAudio } = useLiveCapture();
+  const voices = useLiveVoices(captureId);
   const recording = useRecordingState();
   const locked = busy || recording.isRecording || recording.isStartingRecording || recording.isStopping || recording.isSaving;
 
@@ -42,7 +60,7 @@ export function CaptureView({ folders, onQueued }: { folders: Folder[]; onQueued
   useEffect(() => {
     if (!recording.isRecording) return;
     const options = readCapture();
-    if (options) localStorage.setItem(CAPTURE_OPTIONS, JSON.stringify({ ...options, notes }));
+    if (options) writeCapture({ ...options, notes });
   }, [notes, recording.isRecording]);
 
   async function start() {
@@ -51,12 +69,15 @@ export function CaptureView({ folders, onQueued }: { folders: Folder[]; onQueued
     latch.current = true; setBusy(true); setError('');
     try {
       if (!isCaptureHandoffReady()) throw new Error('El cierre de captura todavía no está preparado. Espera un momento o reinicia la app.');
-      await pipelineRequest('GET', '/v1/status');
+      const status=await pipelineRequest<{audio_setup?:{state:string}}>('GET', '/v1/status');
+      if(status.audio_setup?.state!=='ready')throw new Error('Espera a que termine la preparación automática del audio.');
       const preferences = await invoke<{ auto_save: boolean }>('get_recording_preferences');
       if (!preferences.auto_save) throw new Error('Activa el guardado de audio de la app para procesar esta reunión.');
       localStorage.setItem(CAPTURE_MODE, 'synth');
-      localStorage.setItem(CAPTURE_OPTIONS, JSON.stringify({ title: title.trim(), folder_id: folder || null, notes, consent_confirmed: true }));
-      clearTranscripts(); setMeetingTitle(title.trim());
+      // Optional network context has a short budget; recording is always local.
+      await prepareContext(calendarEventId, folder);
+      writeCapture({ title: title.trim(), folder_id: folder || null, notes, consent_confirmed: true, calendar_event_id: calendarEventId });
+      clearTranscripts();
       recording.setStatus(RecordingStatus.STARTING, 'Preparando micrófono y audio del ordenador…');
       await recordingService.startRecordingWithDevices(selectedDevices.micDevice, selectedDevices.systemDevice, title.trim());
     } catch (e) { setError(message(e)); recording.setStatus(RecordingStatus.ERROR, message(e)); }
@@ -75,27 +96,58 @@ export function CaptureView({ folders, onQueued }: { folders: Folder[]; onQueued
     finally { latch.current = false; setBusy(false); }
   }
 
-  return <div className="voice-library voice-capture-page">
-    <div className="voice-page-heading"><div><p className="voice-eyebrow">NOTAS Y CONVERSACIONES</p><h1>Nueva nota</h1><p>Habla para ti o graba una reunión. Toma tus notas mientras sucede.</p></div><Mic size={24} /></div>
-    {error && <div className="voice-alert" role="alert">{error}</div>}
-    <div className="voice-capture-grid">
-      <section className="voice-capture-settings"><FormField label="Título"><Field.Control className="voice-input" value={title} maxLength={300} disabled={locked} onChange={e => setTitle(e.target.value)} /></FormField>
-        <details className="voice-capture-options"><summary>Carpeta y dispositivos de audio</summary><div>
-        <label className="voice-capture-field">Guardar en<select className="voice-input" value={folder} disabled={locked} onChange={e => setFolder(e.target.value)}><option value="">Privada · Sin carpeta</option>{folders.filter(f => f.can_edit).map(f => <option key={f.id} value={f.id}>{f.name}</option>)}</select></label>
-        <label className="voice-capture-field"><span><Mic size={14} /> Micrófono</span><select className="voice-input" disabled={locked} value={selectedDevices.micDevice ?? ''} onChange={e => setSelectedDevices({ ...selectedDevices, micDevice: e.target.value || null })}><option value="">Predeterminado del sistema</option>{devices.filter(d => d.device_type === 'Input').map(d => <option key={d.name} value={d.name}>{d.name}</option>)}</select></label>
-        <label className="voice-capture-field"><span><Monitor size={14} /> Audio del ordenador</span><select className="voice-input" disabled={locked} value={selectedDevices.systemDevice ?? ''} onChange={e => setSelectedDevices({ ...selectedDevices, systemDevice: e.target.value || null })}><option value="">Predeterminado del sistema</option>{devices.filter(d => d.device_type === 'Output').map(d => <option key={d.name} value={d.name}>{d.name}</option>)}</select></label>
-        </div></details>
-        <p className="voice-notice">Privada por defecto. Se escucha el micrófono y el audio del ordenador, aunque hables tú solo. El audio queda en este Mac; el texto se envía a OmniRoute, que puede usar un proveedor externo.</p>
-        {!recording.isRecording && <label className="voice-capture-consent"><input type="checkbox" checked={consent} disabled={locked} onChange={e => setConsent(e.target.checked)} /><span>Acepto grabar y procesar esta nota. Si participan otras personas, les he informado y han aceptado.</span></label>}
-        <div className="voice-capture-controls">
-          {recording.isRecording ? <><div className="voice-capture-clock" role="status">{recording.isPaused ? 'En pausa' : 'Grabando'} · {time((recording.recordingDuration ?? 0) * 1000)}</div><div className="flex gap-2"><Button variant="outline" disabled={busy || recording.isStopping} onClick={() => void control(recording.isPaused ? 'resume' : 'pause')}>{recording.isPaused ? <Play size={14} /> : <Pause size={14} />}{recording.isPaused ? 'Reanudar' : 'Pausar'}</Button><Button loading={busy} disabled={recording.isStopping} onClick={() => void control('stop')}><Square size={14} /> Finalizar y generar notas</Button></div></> : <Button loading={busy || recording.isStartingRecording} disabled={locked || !consent || !title.trim() || !!pending?.folder_path} onClick={() => void start()}><Mic size={15} /> Empezar grabación</Button>}
-          {recording.statusMessage && <p role="status" className="voice-notice">{recording.statusMessage}</p>}
-          {!recording.isRecording && pending?.folder_path && <Button variant="outline" loading={busy} onClick={() => void control('retry')}>Reintentar envío al procesamiento</Button>}
+  const elapsed = time((recording.recordingDuration ?? 0) * 1000);
+  const toggle = (next: 'transcript' | 'voices') => setPanel(before => before === next ? null : next);
+  const currentFolder = folders.find(item => item.id === folder);
+  return <div className="meeting-editor voice-capture-page" data-slot="meeting-editor">
+    {(error || liveError) && <div className="voice-alert" role="alert">{error || liveError}</div>}
+    <header className="meeting-document-head">
+      <input className="meeting-title-input" aria-label="Título de la nota" value={title} maxLength={300} disabled={locked} onChange={event => setTitle(event.target.value)} />
+      <div className="meeting-metadata">
+        <span className="meeting-chip"><CalendarDays size={17} /> Hoy</span>
+        <button type="button" className="meeting-chip" aria-label="Voces" aria-controls="capture-voices" aria-expanded={panel === 'voices'} onClick={() => toggle('voices')}><Users size={17} /> Voces</button>
+        <Popover><PopoverTrigger asChild><button type="button" className="meeting-chip" disabled={locked}><FolderPlus size={17} />{currentFolder?.name ?? 'Añadir a carpeta'}</button></PopoverTrigger>
+          <PopoverContent className="meeting-popover" align="start"><label>Guardar en<select className="voice-input" aria-label="Carpeta de la nota" value={folder} disabled={locked} onChange={event => setFolder(event.target.value)}>
+            <option value="">Privada · Sin carpeta</option>{folders.filter(item => item.can_edit).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </select></label></PopoverContent></Popover>
+      </div>
+      {prepared && calendarEventId && (prepared.folder_id ?? '') === folder && <details className="calendar-capture-context"><summary>Briefing · {prepared.expected_attendees.length} invitados · {prepared.glossary.length} términos</summary>
+        <p>{prepared.event.description || 'Sin agenda en la invitación.'}</p><p>{prepared.expected_attendees.map(a => a.name || a.email).join(', ')}</p>
+      </details>}
+    </header>
+    <MeetingNotes value={notes} onChange={setNotes} />
+    <div className="meeting-bottom" data-slot="meeting-controls">
+      <div className="meeting-bottom-status" role="status">{waitingForAudio ? 'Grabando · transcripción en espera' : recording.statusMessage}</div>
+      <div className="meeting-dock">
+        <div className="meeting-record-pill">
+          {recording.isRecording ? <>
+            <button type="button" className="meeting-record-status" aria-controls="capture-transcript" aria-expanded={panel === 'transcript'} onClick={() => toggle('transcript')}><AudioLines size={23} /><span>{recording.isPaused ? 'En pausa' : elapsed}</span></button>
+            <Button variant="ghost" disabled={busy || recording.isStopping} aria-label={recording.isPaused ? 'Reanudar grabación' : 'Pausar grabación'} onClick={() => void control(recording.isPaused ? 'resume' : 'pause')}>{recording.isPaused ? <Play size={17} /> : <Pause size={17} />}</Button>
+            <Button variant="ghost" loading={busy} disabled={recording.isStopping} aria-label="Finalizar y generar acta" onClick={() => void control('stop')}><Square size={17} /></Button>
+          </> : <Button loading={busy || recording.isStartingRecording} disabled={locked || !!pending?.folder_path} onClick={() => { if (!consent) setAudioOptions(true); else void start(); }}><Mic size={18} /> Grabar</Button>}
+          <Popover open={audioOptions} onOpenChange={setAudioOptions}><PopoverTrigger asChild><Button variant="ghost" aria-label="Configurar grabación"><ChevronDown size={17} /></Button></PopoverTrigger>
+            <PopoverContent className="meeting-popover meeting-audio-options" side="top" align="start">
+              <h2><Settings2 size={17} /> Grabación</h2>
+              <label><span><Mic size={15} /> Micrófono</span><select className="voice-input" disabled={locked} value={selectedDevices.micDevice ?? ''} onChange={event => setSelectedDevices({ ...selectedDevices, micDevice: event.target.value || null })}><option value="">Predeterminado del sistema</option>{devices.filter(device => device.device_type === 'Input').map(device => <option key={device.name} value={device.name}>{device.name}</option>)}</select></label>
+              <label><span><Monitor size={15} /> Audio del ordenador</span><select className="voice-input" disabled={locked} value={selectedDevices.systemDevice ?? ''} onChange={event => setSelectedDevices({ ...selectedDevices, systemDevice: event.target.value || null })}><option value="">Predeterminado del sistema</option>{devices.filter(device => device.device_type === 'Output').map(device => <option key={device.name} value={device.name}>{device.name}</option>)}</select></label>
+              <p>Audio en este Mac. Texto y notas en el servicio de tu organización.</p>
+              {!recording.isRecording && <><label className="meeting-consent"><input type="checkbox" checked={consent} disabled={locked} onChange={event => setConsent(event.target.checked)} /><span>Acepto grabar y procesar esta nota. Las personas que participan han sido informadas y han aceptado.</span></label>
+                <Button disabled={locked || !consent || !title.trim() || !!pending?.folder_path} loading={busy} onClick={() => { setAudioOptions(false); void start(); }}>Empezar grabación</Button></>}
+            </PopoverContent></Popover>
         </div>
-      </section>
-      <section className="voice-capture-notes"><FormField label="Mis notas" hint="Acompañan a la transcripción al generar las notas."><Field.Control render={<textarea />} className="voice-textarea" value={notes} onChange={e => setNotes(e.target.value)} maxLength={200000} /></FormField>
-        {(recording.isRecording || transcripts.length > 0) && <section className="voice-live-transcript" aria-label="Transcripción en directo"><h2>Transcripción en directo</h2><p className="voice-notice">Se actualiza mientras hablas. La transcripción final se comprueba al terminar.</p><div className="voice-live-segments" role="log" aria-live="polite" aria-relevant="additions text">{transcripts.length ? transcripts.map((segment, index) => <article key={`${segment.id}-${index}`}><time>{time((segment.audio_start_time ?? 0) * 1000)}</time><p>{segment.text}</p></article>) : <p className="voice-notice">Escuchando… El texto aparecerá cuando haya habla.</p>}</div></section>}
-        <p className="voice-notice">El audio temporal se conserva como máximo 24 horas. Los nombres de los hablantes requieren completar el onboarding y la calibración de voz.</p></section>
+        <div className="meeting-capture-panels"><button type="button" className="meeting-chip" aria-label="Transcripción" aria-controls="capture-transcript" aria-expanded={panel === 'transcript'} onClick={() => toggle('transcript')}><AudioLines size={18} /><span>Transcripción</span></button><button type="button" className="meeting-chip" aria-label="Voces" aria-controls="capture-voices" aria-expanded={panel === 'voices'} onClick={() => toggle('voices')}><Users size={18} /><span>Voces</span></button></div>
+        <div className="meeting-ask-disabled"><span>Pregunta sobre esta reunión al terminar</span></div>
+      </div>
+      {!recording.isRecording && pending?.folder_path && <Button variant="outline" loading={busy} onClick={() => void control('retry')}>Reintentar envío al procesamiento</Button>}
     </div>
+    <MeetingPanel id="capture-transcript" title="Transcripción en directo" open={panel === 'transcript'} onClose={() => setPanel(null)} footer={waitingForAudio ? 'Transcripción en espera' : recording.isRecording ? `Grabando · ${elapsed}` : 'Transcripción'}>
+      <div className="meeting-transcript" role="log" aria-live="polite" aria-relevant="additions text">{transcripts.length ? transcripts.map(segment => {
+        const voice = voiceForSegment(segment, voices.status?.matches ?? []);
+        return <article key={segment.id} className={`meeting-transcript-turn ${segment.source === 'microphone' ? 'is-microphone' : ''}`}><header><strong>{voice?.candidate_name ? `${voice.candidate_name}${voice.confirmed ? '' : ' · sugerida'}` : segment.source === 'microphone' ? 'Micrófono' : 'Ordenador'}</strong><time>{time((segment.audio_start_time ?? 0)*1000)}</time></header><p>{segment.text}</p></article>;
+      }) : <p className="meeting-empty">{waitingForAudio ? 'El audio se está guardando. El texto aparecerá cuando el motor quede libre.' : recording.isRecording ? 'Escuchando…' : 'La transcripción aparecerá al comenzar la grabación.'}</p>}</div>
+    </MeetingPanel>
+    <MeetingPanel id="capture-voices" title="Voces" open={panel === 'voices'} onClose={() => setPanel(null)} footer="Las sugerencias se confirman contigo">
+      <LiveVoices {...voices} transcripts={transcripts} expectedParticipants={prepared?.event_id === calendarEventId ? prepared?.expected_attendees.filter(a => a.response !== 'declined').map(a => a.principal_id).filter((id): id is string => !!id) : []} />
+    </MeetingPanel>
   </div>;
 }

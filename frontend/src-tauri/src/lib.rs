@@ -35,7 +35,8 @@ pub(crate) use perf_trace;
 // Re-export async logging macros for external use (removed due to macro conflicts)
 
 // Declare audio module
-pub mod analytics;
+pub mod meeting_links;
+mod analytics;
 pub mod api;
 pub mod audio;
 pub mod config;
@@ -51,6 +52,7 @@ pub mod openrouter;
 pub mod parakeet_engine;
 pub mod state;
 pub mod synth_desktop;
+mod generation_stream;
 pub mod meeting_detection;
 pub mod voice_onboarding;
 pub mod summary;
@@ -601,6 +603,10 @@ pub fn run() {
                     } else {
                         log::info!("Main window hidden to tray on close request");
                     }
+                } else if window.label()=="call-reminder" {
+                    api.prevent_close();
+                    meeting_detection::dismiss_widget(window.app_handle());
+                    let _=window.hide();
                 }
             }
         })
@@ -612,6 +618,8 @@ pub fn run() {
             meeting_detection::synth_detection_status,
             meeting_detection::synth_detection_settings,
             meeting_detection::synth_detection_action,
+            meeting_detection::synth_detection_take_prepare,
+            meeting_detection::synth_detection_widget_expand,
             start_recording,
             stop_recording,
             is_recording,
@@ -820,6 +828,8 @@ pub fn run() {
             onboarding::complete_onboarding,
             onboarding::configure_synth_pipeline,
             synth_desktop::synth_desktop_request,
+            meeting_links::take_meeting_link,
+            generation_stream::synth_generation_stream,
             synth_desktop::synth_pipeline_request,
             synth_desktop::synth_enqueue_capture,
             // System settings commands
@@ -840,6 +850,10 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|_app_handle, event| {
             match event {
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::Opened { urls } => {
+                    for url in urls { meeting_links::receive(_app_handle, url.as_str()); }
+                }
                 #[cfg(target_os = "macos")]
                 tauri::RunEvent::Reopen { .. } => {
                     tray::focus_main_window(_app_handle);

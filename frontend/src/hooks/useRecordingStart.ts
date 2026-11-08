@@ -13,6 +13,7 @@ import {
   type ModelWithStatus,
 } from '@/lib/transcription-model-readiness';
 import { toast } from 'sonner';
+import { pipelineRequest } from '@/synth/api';
 
 const TRANSCRIPTION_RUNTIME_START_ERROR_CODE = 'TRANSCRIPTION_RUNTIME_INITIALIZATION_FAILED';
 const TRANSCRIPTION_RUNTIME_USER_MESSAGE = 'No se pudo iniciar el reconocimiento de voz. Reinicia Synth. Si persiste, repara o reinstala la app.';
@@ -82,6 +83,10 @@ export function useRecordingStart(
   const checkTranscriptionModelReady = useCallback(async (): Promise<boolean> => {
     try {
       const provider = await getTranscriptionProvider();
+      if (provider === 'qwen3') {
+        const status = await pipelineRequest<{audio_setup?: {state: string}}>('GET','/v1/status');
+        return status.audio_setup?.state === 'ready';
+      }
       const commands = getProviderCommands(provider);
 
       if (commands) {
@@ -101,6 +106,10 @@ export function useRecordingStart(
   const checkIfModelDownloading = useCallback(async (): Promise<boolean> => {
     try {
       const provider = await getTranscriptionProvider();
+      if (provider === 'qwen3') {
+        const status = await pipelineRequest<{audio_setup?: {state: string}}>('GET','/v1/status');
+        return ['checking','preparing'].includes(status.audio_setup?.state ?? '');
+      }
       const commands = getProviderCommands(provider);
       if (!commands) return false;
 

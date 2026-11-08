@@ -24,7 +24,7 @@ interface TranscriptContextType {
 
 const TranscriptContext = createContext<TranscriptContextType | undefined>(undefined);
 
-export function TranscriptProvider({ children }: { children: ReactNode }) {
+export function TranscriptProvider({ children, enabled = true }: { children: ReactNode; enabled?: boolean }) {
   const [transcripts, setTranscripts] = useState<Transcript[]>([]);
   const [meetingTitle, setMeetingTitle] = useState('+ New Call');
   const [currentMeetingId, setCurrentMeetingId] = useState<string | null>(null);
@@ -83,6 +83,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
 
   // Initialize IndexedDB and listen for recording-started/stopped events
   useEffect(() => {
+    if (!enabled) return;
     let unlistenRecordingStarted: (() => void) | undefined;
     let unlistenRecordingStopped: (() => void) | undefined;
 
@@ -175,10 +176,11 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
         console.log('🧹 Recording stopped listener cleaned up');
       }
     };
-  }, [currentMeetingId]);
+  }, [currentMeetingId, enabled]);
 
   // Main transcript buffering logic with sequence_id ordering
   useEffect(() => {
+    if (!enabled) return;
     let unlistenFn: (() => void) | undefined;
     let transcriptCounter = 0;
     let transcriptBuffer = new Map<number, Transcript>();
@@ -356,11 +358,12 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
         console.log('🧹 CLEANUP: MAIN transcript listener cleaned up');
       }
     };
-  }, [currentMeetingId]); // Add currentMeetingId dependency
+  }, [currentMeetingId, enabled]); // Add currentMeetingId dependency
 
   // Sync transcript history and meeting name from backend on reload
   // This fixes the issue where reloading during active recording causes state desync
   useEffect(() => {
+    if (!enabled) return;
     const syncFromBackend = async () => {
       // If recording is active and we have no local transcripts, sync from backend
       if (recordingState.isRecording && transcripts.length === 0) {
@@ -402,7 +405,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     };
 
     syncFromBackend();
-  }, [recordingState.isRecording]); // Run when recording state changes
+  }, [recordingState.isRecording, enabled]); // Run when recording state changes
 
   // Manual transcript update handler (for RecordingControls component)
   const addTranscript = useCallback((update: TranscriptUpdate) => {
@@ -507,7 +510,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     } catch (error) {
       console.error('[IndexedDB] ❌ Failed to mark meeting as saved:', error);
     }
-  }, [currentMeetingId]);
+  }, [currentMeetingId, enabled]);
 
   const value: TranscriptContextType = {
     transcripts,

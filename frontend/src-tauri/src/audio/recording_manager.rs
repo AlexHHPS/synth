@@ -191,6 +191,8 @@ pub struct RecordingManager {
     pipeline_manager: AudioPipelineManager,
     recording_saver: RecordingSaver,
     source_archive: Option<super::source_archive::SourceArchive>,
+    closed_sources: Option<serde_json::Value>,
+    source_close_failed: bool,
     device_monitor: Option<AudioDeviceMonitor>,
     device_event_receiver: Option<mpsc::UnboundedReceiver<DeviceEvent>>,
 }
@@ -212,6 +214,8 @@ impl RecordingManager {
             pipeline_manager,
             recording_saver: RecordingSaver::new(),
             source_archive: None,
+            closed_sources: None,
+            source_close_failed: false,
             device_monitor: Some(device_monitor),
             device_event_receiver: Some(device_event_receiver),
         }
@@ -269,6 +273,7 @@ impl RecordingManager {
             transcription_sender,
             0, // Ignored - using dynamic sizing internally
             48000, // 48kHz sample rate
+            super::transcription::qwen_provider::active() && auto_save,
             Some(recording_sender), // CRITICAL: Pass recording sender to receive pre-mixed audio
             mic_name,
             mic_kind,
@@ -384,6 +389,8 @@ impl RecordingManager {
             error!("Error during force flush: {}", e);
         }
 
+        self.finish_sources().await;
+
         // CRITICAL: Full cleanup to release all Arc references and resources
         // This ensures microphone is released even if Drop is delayed
         self.state.cleanup();
@@ -400,19 +407,37 @@ impl RecordingManager {
         let recording_duration = self.state.get_active_recording_duration();
         info!("Recording duration from state: {:?}s", recording_duration);
 
-        self.state.detach_source_tap();
-        let archive_result = if let Some(archive) = self.source_archive.take() {
-            tokio::task::spawn_blocking(move || archive.close()).await
-                .map_err(|_| anyhow::anyhow!("source_archive_join_failed"))
-                .and_then(|result| result).map(Some)
-        } else { Ok(None) };
+        self.finish_sources().await;
         // Finalize the mixed recovery file even when a source archive failed.
         let audio_result = self.recording_saver.stop_and_save(app, recording_duration).await
             .map_err(|error| anyhow::anyhow!(error));
-        if let Some(manifest) = archive_result? {
+        if self.source_close_failed { return Err(anyhow::anyhow!("source_archive_close_failed")); }
+        if let Some(manifest) = self.closed_sources.take() {
             let _ = app.emit("source-archive-closed", manifest);
         }
         audio_result
+    }
+
+    async fn finish_sources(&mut self) {
+        self.state.detach_source_tap();
+        if let Some(archive)=self.source_archive.take() {
+            match tokio::task::spawn_blocking(move || archive.close()).await {
+                Ok(Ok(manifest))=>self.closed_sources=Some(manifest),
+                _=> {
+                    self.source_close_failed=true;
+                    if let Some(folder)=self.recording_saver.get_meeting_folder() {
+                        let _=super::source_archive::mark_failed(folder);
+                    }
+                    self.state.report_error(super::recording_state::AudioError::ProcessingFailed);
+                },
+            }
+        }
+    }
+
+    pub fn live_capture(&self, identity:String) -> Result<Option<super::transcription::capture_stream::LiveCapture>,String> {
+        if self.source_archive.is_none() { return Ok(None); }
+        let folder=self.get_meeting_folder().ok_or("No se encuentra la carpeta de captura.")?;
+        super::transcription::capture_stream::LiveCapture::bind(folder,identity,self.transcript_sink(),self.state.clone()).map(Some)
     }
 
     /// Stop recording and save audio (legacy method)
@@ -553,6 +578,10 @@ impl RecordingManager {
     /// Used for syncing frontend state after page reload during active recording
     pub fn get_transcript_segments(&self) -> Vec<super::recording_saver::TranscriptSegment> {
         self.recording_saver.get_transcript_segments()
+    }
+
+    pub fn transcript_sink(&self) -> super::recording_saver::TranscriptSink {
+        self.recording_saver.transcript_sink()
     }
 
     /// Get meeting name from current recording session

@@ -51,70 +51,19 @@ impl DatabaseManager {
             fs::create_dir_all(&app_data_dir).map_err(|e| sqlx::Error::Io(e))?;
         }
 
-        // Define database paths
-        let tauri_db_path = app_data_dir
-            .join("meeting_minutes.sqlite")
-            .to_string_lossy()
-            .to_string();
-        // Legacy backend DB path (for auto-migration if exists)
-        let backend_db_path = app_data_dir
-            .join("meeting_minutes.db")
-            .to_string_lossy()
-            .to_string();
+        Self::open_app_database(&app_data_dir).await
+    }
 
-        // WAL file paths for defensive cleanup
-        let wal_path = app_data_dir.join("meeting_minutes.sqlite-wal");
-        let shm_path = app_data_dir.join("meeting_minutes.sqlite-shm");
-
-        log::info!("Tauri DB path: {}", tauri_db_path);
-        log::info!("Legacy backend DB path: {}", backend_db_path);
-
-        // Try to open database with defensive WAL handling
-        match Self::new(&tauri_db_path, &backend_db_path).await {
-            Ok(db_manager) => {
-                log::info!("Database opened successfully");
-                Ok(db_manager)
-            }
-            Err(e) => {
-                // Check if error is due to corrupted WAL file
-                let error_msg = e.to_string();
-                if error_msg.contains("malformed") || error_msg.contains("corrupt") {
-                    log::warn!("Database appears corrupted, likely due to orphaned WAL file. Attempting recovery...");
-                    log::warn!("Error details: {}", error_msg);
-
-                    // Delete potentially corrupted WAL/SHM files
-                    if wal_path.exists() {
-                        match fs::remove_file(&wal_path) {
-                            Ok(_) => log::info!("Removed orphaned WAL file: {:?}", wal_path),
-                            Err(e) => log::warn!("Failed to remove WAL file: {}", e),
-                        }
-                    }
-                    if shm_path.exists() {
-                        match fs::remove_file(&shm_path) {
-                            Ok(_) => log::info!("Removed orphaned SHM file: {:?}", shm_path),
-                            Err(e) => log::warn!("Failed to remove SHM file: {}", e),
-                        }
-                    }
-
-                    // Retry connection without WAL files
-                    log::info!("Retrying database connection after WAL cleanup...");
-                    match Self::new(&tauri_db_path, &backend_db_path).await {
-                        Ok(db_manager) => {
-                            log::info!("Database opened successfully after WAL recovery");
-                            Ok(db_manager)
-                        }
-                        Err(retry_err) => {
-                            log::error!("Database connection failed even after WAL cleanup: {}", retry_err);
-                            Err(retry_err)
-                        }
-                    }
-                } else {
-                    // Not a WAL-related error, propagate original error
-                    log::error!("Database connection failed: {}", error_msg);
-                    Err(e)
-                }
-            }
+    async fn open_app_database(app_data_dir: &Path) -> Result<Self> {
+        let tauri_db_path = app_data_dir.join("meeting_minutes.sqlite");
+        let backend_db_path = app_data_dir.join("meeting_minutes.db");
+        // A committed WAL can be the only copy of recent notes and transcripts.
+        // Let SQLite recover it; never delete sidecars based on an error message.
+        let result = Self::new(&tauri_db_path.to_string_lossy(), &backend_db_path.to_string_lossy()).await;
+        if let Err(ref error) = result {
+            log::error!("Database initialization failed; files retained for recovery: {}", error);
         }
+        result
     }
 
     /// Check if this is the first launch (sqlite database doesn't exist yet)
@@ -204,5 +153,60 @@ impl DatabaseManager {
         log::info!("Database connection pool closed");
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DatabaseManager;
+
+    #[tokio::test]
+    async fn leave_committed_wal_for_crash_recovery() {
+        let Some(directory) = std::env::var_os("SYNTH_WAL_CRASH_FIXTURE") else { return; };
+        let path = std::path::Path::new(&directory).join("meeting_minutes.sqlite");
+        let pool = sqlx::sqlite::SqlitePoolOptions::new().max_connections(1)
+            .connect(&format!("sqlite://{}?mode=rwc", path.display())).await.unwrap();
+        sqlx::query("PRAGMA journal_mode=WAL").execute(&pool).await.unwrap();
+        sqlx::query("PRAGMA wal_autocheckpoint=0").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE recovery_fixture(note TEXT)").execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO recovery_fixture VALUES ('Committed before crash')").execute(&pool).await.unwrap();
+        // Exit without dropping the pool so the committed WAL remains on disk.
+        std::process::exit(0);
+    }
+
+    #[tokio::test]
+    async fn committed_notes_survive_reopening_after_an_abrupt_exit() {
+        let directory = tempfile::tempdir().unwrap();
+        let module = module_path!().split_once("::").unwrap().1;
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &format!("{module}::leave_committed_wal_for_crash_recovery")])
+            .env("SYNTH_WAL_CRASH_FIXTURE", directory.path()).status().unwrap();
+        assert!(status.success());
+        assert!(std::fs::metadata(directory.path().join("meeting_minutes.sqlite-wal")).unwrap().len() > 0);
+        let manager = DatabaseManager::open_app_database(directory.path()).await.unwrap();
+        let note: String = sqlx::query_scalar("SELECT note FROM recovery_fixture")
+            .fetch_one(manager.pool()).await.unwrap();
+        assert_eq!(note, "Committed before crash");
+        manager.cleanup().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn initialization_failure_preserves_database_and_wal() {
+        let directory = tempfile::tempdir().unwrap();
+        let files = [
+            ("meeting_minutes.sqlite", b"invalid SQLite header".as_slice()),
+            ("meeting_minutes.sqlite-wal", b"uncheckpointed recovery bytes".as_slice()),
+            ("meeting_minutes.sqlite-shm", b"recovery index bytes".as_slice()),
+        ];
+        for (name, bytes) in files {
+            std::fs::write(directory.path().join(name), bytes).unwrap();
+        }
+        assert!(DatabaseManager::open_app_database(directory.path()).await.is_err());
+        for (name, bytes) in files {
+            // SQLite may rebuild SHM itself; the database and WAL hold data.
+            if !name.ends_with("-shm") {
+                assert_eq!(std::fs::read(directory.path().join(name)).unwrap(), bytes);
+            }
+        }
     }
 }

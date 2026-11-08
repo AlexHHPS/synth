@@ -73,7 +73,7 @@ export function SetupOverviewStep() {
                                 </button>
                                 </TooltipTrigger>
                                 <TooltipContent className="max-w-xs text-sm">
-                                Las actas se generan con local-combo. El audio y los perfiles de voz permanecen en tu Mac.
+                                Las actas se generan con el servicio de actas de tu organización. El audio y los perfiles de voz permanecen en tu Mac.
                                 </TooltipContent>
                             </Tooltip>
                             </TooltipProvider>

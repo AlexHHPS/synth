@@ -1,6 +1,7 @@
 import Foundation
 import CoreML
 import FluidAudio
+import AVFoundation
 
 enum SpeakerError: Error { case usage, invalidModel, invalidAudio, invalidEmbedding }
 
@@ -41,8 +42,27 @@ struct SynthSpeakers {
     static func main() async {
         do {
             let args = CommandLine.arguments
+            if args.count == 4 && args[1] == "serve" {
+                let runtime = try ResidentSpeakers(models: URL(fileURLWithPath: args[2]),
+                                                   directory: URL(fileURLWithPath: args[3]))
+                await runtime.serve()
+                return
+            }
             guard args.count == 5 else { throw SpeakerError.usage }
             let operation = args[1], input = args[2], root = URL(fileURLWithPath: args[3]), output = args[4]
+            if operation == "project" {
+                let data = try Data(contentsOf: URL(fileURLWithPath: input))
+                guard data.count <= 1_048_576 else { throw SpeakerError.invalidEmbedding }
+                let vectors = try projectionInputs(data)
+                let transform = PLDATransform(pldaRhoModel: try model(root, "PldaRho.mlmodelc", cpu: true), psi: [])
+                let projected = try await transform.transform(vectors)
+                guard projected.count == vectors.count,
+                      projected.allSatisfy({ $0.count == 128 && $0.allSatisfy(\.isFinite) })
+                else { throw SpeakerError.invalidEmbedding }
+                try save(["mode":"real", "revision":libraryRevision, "embedding_space":"plda_rho128_v1",
+                          "vectors":projected], output)
+                return
+            }
                 let models = try OfflineDiarizerModels(
                     segmentationModel: model(root, "Segmentation.mlmodelc"),
                     fbankModel: model(root, "FBank.mlmodelc", cpu: true),
@@ -54,12 +74,16 @@ struct SynthSpeakers {
             if operation == "diarize" {
                 do {
                     let result = try await manager.process(URL(fileURLWithPath: input))
-                    let segments: [[String: Any]] = result.segments.map {
+                    let rawSegments: [[String: Any]] = result.segments.map {
                         ["speaker_id": $0.speakerId, "start_ms": Int($0.startTimeSeconds * 1000),
                          "end_ms": Int($0.endTimeSeconds * 1000)]
                     }
+                    let file = try AVAudioFile(forReading: URL(fileURLWithPath: input))
+                    let samples = Int((Double(file.length) / file.fileFormat.sampleRate * 16000).rounded())
+                    let segments = try physicalSegments(rawSegments, samples: samples)
                     try save(["mode": "real", "engine": "FluidAudio-offline-VBx", "revision": libraryRevision,
-                              "speech_state": "detected", "segments": segments], output)
+                              "speech_state": segments.isEmpty ? "no_usable_speech" : "detected", "segments": segments,
+                              "raw_segments": rawSegments, "time_policy": "intersection_with_physical_audio_v1"], output)
                 } catch OfflineDiarizationError.noSpeechDetected {
                     // An empty embedding set is a normal outcome for a silent/noisy
                     // source, not a model or capture failure. Never catch other errors.

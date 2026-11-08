@@ -7,8 +7,11 @@ from pathlib import Path
 import plistlib
 import shutil
 import subprocess
+import time
+import importlib.util
 
 parser = argparse.ArgumentParser()
+parser.add_argument('--app-source', type=Path)
 parser.add_argument('--format', choices=['zip', 'dmg'], default='zip')
 args = parser.parse_args()
 
@@ -17,22 +20,23 @@ OUTPUT = ROOT / "synth/.runtime/distribution"
 OUTPUT.mkdir(parents=True, exist_ok=True)
 (ROOT / "synth/.runtime/proof").mkdir(parents=True, exist_ok=True)
 BRAND = json.loads((ROOT / "branding.json").read_text())
-source = Path(os.environ.get("CARGO_TARGET_DIR", str(ROOT / "synth/.runtime/cargo-target"))) / "release/bundle/macos" / (BRAND["name"] + ".app")
+source = args.app_source or Path(os.environ.get("CARGO_TARGET_DIR", str(ROOT / "synth/.runtime/cargo-target"))) / "release/bundle/macos" / (BRAND["name"] + ".app")
 destination = OUTPUT / (BRAND["name"] + ".app")
 if destination.exists():
     shutil.rmtree(destination)
 shutil.copytree(source, destination)
 shutil.copy2(ROOT / "frontend/src-tauri/binaries/ffmpeg-aarch64-apple-darwin", destination / "Contents/MacOS/ffmpeg")
 host = destination / "Contents/Resources/synth-host"
-shutil.copytree(OUTPUT / "host/synth-voice-host", host)
+subprocess.run(["cp","-cR",str(OUTPUT / "host/synth-voice-host"),str(host)],check=True)
 info = destination / "Contents/Info.plist"
-value = plistlib.loads(info.read_bytes()); value["LSMinimumSystemVersion"] = "14.0"; info.write_bytes(plistlib.dumps(value))
+value = plistlib.loads(info.read_bytes()); value["LSMinimumSystemVersion"] = "14.2"; info.write_bytes(plistlib.dumps(value))
 notices = destination / "Contents/Resources/Notices"
 notices.mkdir()
 for source in [ROOT / "LICENSE.md", ROOT / "synth/.toolchains/whisper-portable/LICENSE",
                ROOT / "synth/.runtime/speaker-model-NOTICE.md", ROOT / "synth/.runtime/speaker-model-PROVENANCE.md",
                ROOT / "NOTICE.md", ROOT / "docs/synth/third-party/FluidAudio-LICENSE.txt",
-               ROOT / "docs/synth/third-party/Community1-NOTICE.md"]:
+               ROOT / "docs/synth/third-party/Community1-NOTICE.md",
+               ROOT / "docs/synth/third-party/uv-LICENSE-MIT.txt", ROOT / "docs/synth/third-party/uv-LICENSE-APACHE.txt"]:
     if not source.is_file(): raise FileNotFoundError("Required distribution notice missing: " + source.name)
     if source.is_file():
         shutil.copy2(source, notices / ("whisper-LICENSE" if "whisper-portable" in str(source) else source.name))
@@ -59,7 +63,10 @@ subprocess.run(["codesign", "--verify", "--deep", "--strict", str(destination)],
 subprocess.run([str(host / "synth-voice-host"), "--self-check"], check=True)
 staging = OUTPUT / "dmg-content"
 if staging.exists(): shutil.rmtree(staging)
-staging.mkdir(); shutil.copytree(destination, staging / destination.name)
+staging.mkdir(); subprocess.run(["cp","-cR",str(destination),str(staging / destination.name)],check=True)
+spec=importlib.util.spec_from_file_location("kit",ROOT/"synth/scripts/build-install-kit.py")
+kit=importlib.util.module_from_spec(spec);spec.loader.exec_module(kit)
+kit.render(staging,"Consulta el checksum junto al DMG en el kit completo.",inside_dmg=True)
 (staging / "Applications").symlink_to("/Applications")
 guide = ROOT / "docs/synth/installation.md"
 if guide.exists(): shutil.copy2(guide, staging / "Instrucciones.md")
@@ -72,6 +79,6 @@ else:
 digest = hashlib.file_digest(dmg.open("rb"), "sha256").hexdigest()
 dmg.with_suffix(dmg.suffix + ".sha256").write_text(digest + "  " + dmg.name + "\n")
 (ROOT / "synth/.runtime/proof/portable-package.json").write_text(json.dumps({"status":"BUILT_AND_SELF_CHECKED",
-    "architecture":"arm64", "minimum_macos":"14.0", "dmg":str(dmg), "sha256":digest,
+    "architecture":"arm64", "minimum_macos":"14.2", "dmg":str(dmg), "sha256":digest,
     "signature":"ad_hoc", "notarized":False, "second_physical_mac_tested":False}, indent=2))
 print("PILOT_PACKAGE_READY", dmg, digest)

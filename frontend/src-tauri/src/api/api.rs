@@ -602,6 +602,9 @@ pub async fn api_get_transcript_config<R: Runtime>(
     state: tauri::State<'_, AppState>,
     _auth_token: Option<String>,
 ) -> Result<Option<TranscriptConfig>, String> {
+    if crate::audio::transcription::qwen_provider::packaged(&_app) {
+        return Ok(Some(TranscriptConfig {provider:"qwen3".into(),model:"Qwen3-ASR-1.7B".into(),api_key:None}));
+    }
     log_info!("api_get_transcript_config called (native)");
     let pool = state.db_manager.pool();
 

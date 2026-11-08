@@ -1,0 +1,43 @@
+/* Live voices panel; reuses the existing theme tokens. */
+.voice-live-widgets {
+  display: grid; gap: var(--space-4); margin-top: var(--space-6); min-width: 0;
+}
+.voice-live-widget {
+  padding: var(--space-4); border: 1px solid hsl(var(--border));
+  border-radius: var(--radius-sm); background: hsl(var(--card)); min-width: 0;
+}
+.voice-live-voices {
+  color: hsl(var(--foreground));
+  font-size: var(--text-sm);
+}
+.voice-live-widget h2 { font-size: var(--text-sm); font-weight: 500; margin: 0; }
+.voice-live-voices summary {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
+  min-height: var(--space-12); cursor: pointer; font-weight: 500;
+}
+.voice-live-voices summary span, .voice-live-person time {
+  color: hsl(var(--muted-foreground)); font-size: var(--text-xs); font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+.voice-live-voices summary:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: var(--space-1); }
+.voice-live-voices ul { list-style: none; padding: 0; margin: 0; }
+.voice-live-person { padding-block: var(--space-4); border-top: 1px solid hsl(var(--border)); }
+.voice-live-person-heading { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: baseline; }
+.voice-live-person-heading strong { overflow-wrap: anywhere; font-weight: 500; }
+.voice-live-person time { flex-basis: 100%; }
+.voice-live-identity-state {
+  font-size: var(--text-xs); padding: var(--space-1) var(--space-2);
+  background: hsl(var(--secondary)); color: hsl(var(--secondary-foreground)); border-radius: var(--radius-sm);
+}
+.voice-live-identity-state[data-confirmed="true"] { border: 1px solid hsl(var(--border)); background: hsl(var(--card)); }
+.voice-live-excerpt { margin-block: var(--space-3); max-width: var(--measure); overflow-wrap: anywhere; line-height: var(--leading-relaxed, 1.6); }
+.voice-live-identify { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-3); margin-top: var(--space-3); }
+.voice-live-identify label { display: grid; gap: var(--space-1); flex: 1; min-width: 0; max-width: 100%; }
+.voice-live-identify select { width: 100%; min-height: var(--space-12); }
+.voice-capture-settings .voice-input { min-height: var(--space-12); }
+.voice-live-voices [data-slot="button"] { min-height: var(--space-12); }
+.voice-live-voice-error { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); }
+.voice-live-segments article.voice-live-segment { display: block; }
+.voice-live-segment-meta { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: baseline; margin-bottom: var(--space-1); }
+.voice-live-speaker { color: hsl(var(--muted-foreground)); font-size: var(--text-xs); overflow-wrap: anywhere; }
+.voice-live-segment p { max-width: var(--measure); overflow-wrap: anywhere; }

@@ -6,6 +6,7 @@ import { Copy, KeyRound, Plug, Plus } from 'lucide-react';
 import { Button } from './design-system/button';
 import { FormField } from './design-system/form-field';
 import { Folder, Integration, Page, message, pipelineRequest, request } from './api';
+import { GoogleCalendarConnection } from './CalendarHome';
 
 export function IntegrationsView({ folders, refreshToken, onCreateFolder }: {
   folders: Folder[]; refreshToken: number; onCreateFolder: () => void;
@@ -91,7 +92,8 @@ export function IntegrationsView({ folders, refreshToken, onCreateFolder }: {
   }
 
   return <div className="voice-library">
-    <div className="voice-page-heading"><div><p className="voice-eyebrow">CONECTA TU CONOCIMIENTO</p><h1>Integraciones</h1><p>Comparte transcripciones y actas con otros productos de tu organización.</p></div><Plug size={24} /></div>
+    <div className="voice-page-heading"><div><p className="voice-eyebrow">CONECTA TU CONOCIMIENTO</p><h1>Integraciones</h1><p>Prepara tus reuniones y comparte transcripciones y actas con otros productos de tu organización.</p></div><Plug size={24} /></div>
+    <GoogleCalendarConnection refreshToken={refreshToken} />
     {error && <div className="voice-alert" role="alert">{error}</div>}
     {toast && <p className="voice-success" role="status">{toast}</p>}
     {endpointError && <p className="voice-notice" role="status">{endpointError}</p>}

@@ -12,6 +12,11 @@ export interface Transcript {
   chunk_start_time?: number; // Legacy field
   is_partial?: boolean;
   confidence?: number;
+  capture_id?: string;
+  evidence_state?: string;
+  block_id?: string;
+  revision?: number;
+  source?: string;
   // NEW: Recording-relative timestamps for playback sync
   audio_start_time?: number; // Seconds from recording start (e.g., 125.3)
   audio_end_time?: number;   // Seconds from recording start (e.g., 128.6)
@@ -25,7 +30,11 @@ export interface TranscriptUpdate {
   sequence_id: number;
   chunk_start_time: number; // Legacy field
   is_partial: boolean;
-  confidence: number;
+  confidence?: number;
+  capture_id?: string;
+  evidence_state?: string;
+  block_id?: string;
+  revision?: number;
   // NEW: Recording-relative timestamps for playback sync
   audio_start_time: number; // Seconds from recording start
   audio_end_time: number;   // Seconds from recording start

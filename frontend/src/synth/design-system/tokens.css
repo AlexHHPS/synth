@@ -13,8 +13,12 @@
   --gray-alpha-50: rgba(15,23,42,.025); --gray-alpha-100: rgba(15,23,42,.05);
   --gray-alpha-150: rgba(15,23,42,.075); --gray-alpha-200: rgba(15,23,42,.10);
   --gray-alpha-300: rgba(15,23,42,.16); --gray-alpha-400: rgba(15,23,42,.24);
+  --success: 152 60% 32%; --success-foreground: 0 0% 100%;
+  --warning: 32 90% 38%; --warning-solid: 36 90% 58%; --info: 205 75% 40%;
+  --synth-rail: hsl(210 20% 97%);
+  --header-height: 3.125rem; --motion-slow: 200ms;
 }
-.dark {
+.dark, [data-mode="dark"] {
   --background: 222 47% 7%; --foreground: 210 20% 96%;
   --card: 222 47% 10%; --card-foreground: 210 20% 96%;
   --popover: 222 47% 10%; --popover-foreground: 210 20% 96%;
@@ -22,4 +26,6 @@
   --secondary: 217 33% 18%; --secondary-foreground: 210 20% 96%;
   --muted: 217 33% 18%; --muted-foreground: 215 20% 70%;
   --border: 217 33% 22%; --input: 217 33% 22%;
+  --success: 152 50% 55%; --warning: 38 90% 62%; --info: 205 80% 68%;
+  --synth-rail: hsl(222 47% 9%);
 }

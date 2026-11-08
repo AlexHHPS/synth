@@ -192,7 +192,7 @@ pub async fn initialize_fresh_database(app: AppHandle) -> Result<(), String> {
     
     // New installs follow the user's explicit pipeline policy; no mandatory local LLM.
     crate::database::repositories::setting::SettingsRepository::save_model_config(
-        pool, "synth-pipeline", "local-combo", "large-v3-turbo-q5_0", None,
+        pool, "synth-pipeline", "instant-combo", "large-v3-turbo-q5_0", None,
     ).await.map_err(|_| "No se pudo configurar el servicio de actas.".to_string())?;
     crate::database::repositories::setting::SettingsRepository::save_transcript_config(
         pool, "localWhisper", "large-v3-turbo-q5_0",

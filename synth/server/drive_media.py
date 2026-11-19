@@ -47,7 +47,7 @@ def parse_link(link):
 def drive_opener():
     return urllib.request.build_opener(
         urllib.request.ProxyHandler({}), desktop_auth.NoRedirect(),
-        urllib.request.HTTPSHandler(context=ssl.create_default_context(cafile="/etc/ssl/cert.pem")),
+        urllib.request.HTTPSHandler(context=ssl.create_default_context()),
     )
 
 

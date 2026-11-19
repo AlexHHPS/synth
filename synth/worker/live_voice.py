@@ -19,6 +19,7 @@ from .voice_windows import voice_windows
 
 REVISION = 'c388107348134698135cfd34f3f59dc823b6e7ce'
 WINDOW = 30 * RATE
+SKIPPABLE_WINDOWS = 3
 POLICY = 'source_voice30_guard120_first_two5_and_join10_v1'
 
 
@@ -80,6 +81,7 @@ class LiveVoiceObserver:
             ('live_voice.py', 'voice_windows.py', 'speaker_session.py', 'voice_binding.py')}
         self.state, self.error_code, self.closed = 'collecting', None, False
         self.phase = 'collecting'
+        self.skipped_windows = 0
         self.completed_windows = self.embedding_calls = self.diarization_calls = self.reused_windows = 0
         try:
             self._publish_location()
@@ -135,11 +137,34 @@ class LiveVoiceObserver:
                     raise ValueError('voice_capture_clock_invalid')
                 self.buffers.setdefault(source, array('h')).frombytes(pcm.tobytes())
             self.position += (end-start+2)//3
-            if self.position-self.start >= WINDOW:
-                self._window(self.position)
         except Exception as error:
             # Voice is optional evidence. A failure must not lose the ASR slab.
             self._abstain(error)
+            return
+        if self.position-self.start >= WINDOW:
+            try:
+                self._window(self.position)
+            except Exception as error:
+                self._skip(error)
+
+    def _skip(self, error):
+        """One window the voice models could not read costs that window, not the meeting's voices."""
+        code = str(error)
+        if (not isinstance(error, (ValueError, OSError)) or code.startswith('voice_capture_')
+                or self.skipped_windows >= SKIPPABLE_WINDOWS):
+            # Ownership, paths and bindings are integrity checks: never continue past them.
+            self._abstain(error)
+            return
+        self.skipped_windows += 1
+        self.error_code = code if code.startswith(('speaker_', 'voice_')) and code.replace('_', '').isalnum() and len(code) <= 100 else 'voice_observation_failed'
+        if self.worker is not None:
+            self.worker.close()
+            self.worker = None
+        self.start, self.buffers = self.position, {}
+        try:
+            self._publish_location()
+        except OSError:
+            pass
 
     def _window(self, end):
         if load_owner(self.folder, self.capture_id) != self.owner:

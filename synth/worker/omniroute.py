@@ -16,18 +16,31 @@ COMBO = os.environ.get("OMNIROUTE_COMBO", "local-combo")
 
 
 BUSY_RETRIES, BUSY_WAIT_S = 12, 10
+# A gateway restart or a dropped connection lasts seconds; an acta takes minutes to redo.
+TRANSIENT_STATUS, TRANSIENT_WAITS_S = (500, 502, 503, 504), (2, 6, 15)
 
 
 def _open(opener, request, sleep=time.sleep):
-    """Retry busy admission only, before reading any content. Never replay a partial stream."""
-    for attempt in range(BUSY_RETRIES + 1):
+    """Retry admission only, before reading any content. Never replay a partial stream."""
+    busy = transient = 0
+    while True:
         try:
             return opener.open(request, timeout=180)
         except urllib.error.HTTPError as error:
-            if error.code != 429 or attempt == BUSY_RETRIES:
+            if error.code == 429 and busy < BUSY_RETRIES:
+                busy += 1
+                sleep(BUSY_WAIT_S)
+            elif error.code in TRANSIENT_STATUS and transient < len(TRANSIENT_WAITS_S):
+                sleep(TRANSIENT_WAITS_S[transient])
+                transient += 1
+            else:
                 raise
-            sleep(BUSY_WAIT_S)
-    raise ValueError("gateway_unreachable")
+        except OSError:
+            # Refused, reset or timed out before any answer.
+            if transient >= len(TRANSIENT_WAITS_S):
+                raise
+            sleep(TRANSIENT_WAITS_S[transient])
+            transient += 1
 
 
 def _send(opener, request, sleep=time.sleep):
@@ -74,8 +87,13 @@ def _stream(opener, request, on_delta):
     return result
 
 
+# What Hermes allows per answer. A caller asking for more gets the maximum, never a refusal.
+MAX_OUTPUT_TOKENS = 8192
+
+
 def completion(messages, max_tokens=8192, *, route=None, on_delta=None):
     route = route or COMBO
+    max_tokens = max(1, min(int(max_tokens), MAX_OUTPUT_TOKENS))
     gateway = os.environ.get("OMNIROUTE_URL", "http://127.0.0.1:20128/v1").rstrip("/")
     if not approved_endpoint(gateway, LOCAL_GATEWAYS):
         raise ValueError("unapproved_gateway")
@@ -120,6 +138,9 @@ def completion(messages, max_tokens=8192, *, route=None, on_delta=None):
         status = getattr(error, "code", None)
         logging.getLogger("synth.worker").warning("gateway_error cause=%s%s", type(error).__name__,
                                                    f" status={status}" if isinstance(status, int) else "")
+        if status in (400, 413, 422):
+            # Refused for its size or shape, not because the gateway is down: a smaller request can pass.
+            raise ValueError("gateway_request_rejected") from error
         raise ValueError("gateway_unavailable_or_invalid") from error
     return {"mode": "real", "runtime_policy_id": POLICY_ID,
             "routed_via_omniroute": True, "requested_combo": route,

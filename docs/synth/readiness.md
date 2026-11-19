@@ -16,7 +16,7 @@ operator-configured infrastructure. It contains no company deployment or credent
 | REST/MCP | 43 HTTP/official MCP SDK checks: authenticated reads, scope isolation, versions, denial without a key, write denial and revocation. |
 | Cloud Auth | Supabase Google login, allowed domains and active-session checks. A new operator deployment needs its own OAuth configuration and live login test. |
 | Database permissions | Isolated PostgreSQL test verifies backend DML, denial of DDL/Auth-table access, and denial of direct browser library reads. |
-| Packaging | Apple Silicon build, packaged host self-check and ad hoc signature. Distribution uses the pinned audio-only FFmpeg source build with its corresponding source and notices. |
+| Packaging | Apple Silicon build, packaged host self-check and ad hoc signature. Distribution uses the pinned FFmpeg source build with its corresponding source and notices. |
 
 Before an organizational release, configure the operator's cloud origins and secrets,
 initialize the schema with management credentials, deploy API and worker with the

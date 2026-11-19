@@ -193,6 +193,7 @@ pub struct RecordingManager {
     source_archive: Option<super::source_archive::SourceArchive>,
     closed_sources: Option<serde_json::Value>,
     source_close_failed: bool,
+    source_ready: bool,
     device_monitor: Option<AudioDeviceMonitor>,
     device_event_receiver: Option<mpsc::UnboundedReceiver<DeviceEvent>>,
 }
@@ -216,6 +217,7 @@ impl RecordingManager {
             source_archive: None,
             closed_sources: None,
             source_close_failed: false,
+            source_ready: false,
             device_monitor: Some(device_monitor),
             device_event_receiver: Some(device_event_receiver),
         }
@@ -237,6 +239,7 @@ impl RecordingManager {
         microphone_device: Option<Arc<AudioDevice>>,
         system_device: Option<Arc<AudioDevice>>,
         auto_save: bool,
+        incremental_sources: bool,
     ) -> std::result::Result<mpsc::UnboundedReceiver<AudioChunk>, RecordingStartError> {
         info!("Starting recording manager (auto_save: {})", auto_save);
 
@@ -273,7 +276,7 @@ impl RecordingManager {
             transcription_sender,
             0, // Ignored - using dynamic sizing internally
             48000, // 48kHz sample rate
-            super::transcription::qwen_provider::active() && auto_save,
+            incremental_sources,
             Some(recording_sender), // CRITICAL: Pass recording sender to receive pre-mixed audio
             mic_name,
             mic_kind,
@@ -313,18 +316,18 @@ impl RecordingManager {
 
         // Start audio streams - they send RAW unmixed chunks to pipeline for mixing
         // Pipeline handles mixing and distribution to both recording and transcription
-        if let Err(error) = self.stream_manager.start_streams(microphone_device.clone(), system_device.clone(), None).await {
-            self.state.stop_recording();
-            let _ = self.stream_manager.stop_streams();
-            self.state.detach_source_tap();
-            let _ = self.pipeline_manager.stop().await;
-            self.state.cleanup();
-            return Err(error.into());
+        if let Err(e) = self.stream_manager.start_streams(microphone_device.clone(), system_device.clone(), None).await {
+            self.cleanup_without_save().await;
+            return Err(e.into());
         }
 
         // Start device monitoring to detect disconnects
         if let Some(ref mut monitor) = self.device_monitor {
-            if let Err(e) = monitor.start_monitoring(microphone_device, system_device) {
+            #[cfg(target_os = "linux")]
+            let monitored = (self.state.get_microphone_device(), self.state.get_system_device());
+            #[cfg(not(target_os = "linux"))]
+            let monitored = (microphone_device, system_device);
+            if let Err(e) = monitor.start_monitoring(monitored.0, monitored.1) {
                 warn!("Failed to start device monitoring: {}", e);
                 // Non-fatal - continue without monitoring
             } else {
@@ -338,6 +341,12 @@ impl RecordingManager {
         Ok(transcription_receiver)
     }
 
+    #[cfg(target_os = "linux")]
+    pub(super) fn request_capture_finish(&self) { self.stream_manager.request_finish(); }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn finish_role(&self, microphone: bool) -> bool { self.stream_manager.finish_role(microphone) }
+
     /// Stop recording streams without saving (for use when waiting for transcription)
     pub async fn stop_streams_only(&mut self) -> Result<()> {
         info!("Stopping recording streams only");
@@ -348,10 +357,14 @@ impl RecordingManager {
         }
 
         // Stop recording state first
+        #[cfg(not(target_os = "linux"))]
         self.state.stop_recording();
 
         // Stop audio streams
-        if let Err(e) = self.stream_manager.stop_streams() {
+        let stream_result = self.stream_manager.stop_streams().await;
+        #[cfg(target_os = "linux")]
+        self.state.stop_recording();
+        if let Err(ref e) = stream_result {
             error!("Error stopping audio streams: {}", e);
         }
 
@@ -376,10 +389,14 @@ impl RecordingManager {
         }
 
         // Stop recording state first - this clears device references
+        #[cfg(not(target_os = "linux"))]
         self.state.stop_recording();
 
         // Stop audio streams immediately
-        if let Err(e) = self.stream_manager.stop_streams() {
+        let stream_result = self.stream_manager.stop_streams().await;
+        #[cfg(target_os = "linux")]
+        self.state.stop_recording();
+        if let Err(ref e) = stream_result {
             error!("Error stopping audio streams: {}", e);
         }
 
@@ -396,6 +413,9 @@ impl RecordingManager {
         self.state.cleanup();
 
         info!("✅ Recording streams stopped with immediate flush completed");
+        #[cfg(target_os = "linux")]
+        return stream_result;
+        #[cfg(not(target_os = "linux"))]
         Ok(())
     }
 
@@ -422,17 +442,31 @@ impl RecordingManager {
         self.state.detach_source_tap();
         if let Some(archive)=self.source_archive.take() {
             match tokio::task::spawn_blocking(move || archive.close()).await {
-                Ok(Ok(manifest))=>self.closed_sources=Some(manifest),
+                Ok(Ok(manifest))=>{ self.closed_sources=Some(manifest); self.source_ready=true; }
                 _=> {
-                    self.source_close_failed=true;
-                    if let Some(folder)=self.recording_saver.get_meeting_folder() {
-                        let _=super::source_archive::mark_failed(folder);
+                    // The writer died, but the samples it wrote are on disk:
+                    // seal them so the meeting can still be transcribed.
+                    let folder=self.recording_saver.get_meeting_folder().cloned();
+                    let sealed=match folder.clone() {
+                        Some(folder)=>tokio::task::spawn_blocking(move || super::source_archive::recover(&folder)).await.ok().and_then(|r|r.ok()).flatten(),
+                        None=>None,
+                    };
+                    match sealed {
+                        Some(manifest)=>{ self.closed_sources=Some(manifest); self.source_ready=true; }
+                        None=> {
+                            self.source_close_failed=true;
+                            if let Some(folder)=folder { let _=super::source_archive::mark_failed(&folder); }
+                            self.state.report_error(super::recording_state::AudioError::ProcessingFailed);
+                        }
                     }
-                    self.state.report_error(super::recording_state::AudioError::ProcessingFailed);
                 },
             }
         }
     }
+
+    /// True once both tracks are closed with a verified manifest: the capture
+    /// can be processed whatever happened to the mixed recording.
+    pub fn source_archive_ready(&self) -> bool { self.source_ready }
 
     pub fn live_capture(&self, identity:String) -> Result<Option<super::transcription::capture_stream::LiveCapture>,String> {
         if self.source_archive.is_none() { return Ok(None); }
@@ -449,10 +483,14 @@ impl RecordingManager {
         info!("Recording duration before stop: {:?}s", recording_duration);
 
         // Stop recording state first
+        #[cfg(not(target_os = "linux"))]
         self.state.stop_recording();
 
         // Stop audio streams
-        if let Err(e) = self.stream_manager.stop_streams() {
+        let stream_result = self.stream_manager.stop_streams().await;
+        #[cfg(target_os = "linux")]
+        self.state.stop_recording();
+        if let Err(ref e) = stream_result {
             error!("Error stopping audio streams: {}", e);
         }
 
@@ -547,6 +585,11 @@ impl RecordingManager {
     }
 
     /// Set error callback for handling errors
+    pub fn set_health_callback<F>(&self, callback: F)
+    where F: Fn(&str, Option<&str>) + Send + Sync + 'static {
+        self.state.set_health_callback(callback);
+    }
+
     pub fn set_error_callback<F>(&self, callback: F)
     where
         F: Fn(&super::recording_state::AudioError) + Send + Sync + 'static,
@@ -599,9 +642,11 @@ impl RecordingManager {
             self.state.stop_recording();
 
             // Stop audio streams
-            if let Err(e) = self.stream_manager.stop_streams() {
+            if let Err(e) = self.stream_manager.stop_streams().await {
                 error!("Error stopping audio streams during cleanup: {}", e);
             }
+
+            self.state.detach_source_tap();
 
             // Stop audio pipeline
             if let Err(e) = self.pipeline_manager.stop().await {
@@ -647,10 +692,39 @@ impl RecordingManager {
         // during a mic-only hot-swap, which would leave the monitor tracking
         // the dead name and spamming "missing for N checks".
         if let Some(ref monitor) = self.device_monitor {
+            #[cfg(not(target_os = "linux"))]
             monitor.notify_mic_swapped(device.name.clone(), system_name);
+            #[cfg(target_os = "linux")]
+            { let _ = system_name; monitor.notify_mic_swapped(device.name.clone(), None); }
         }
         self.state.set_microphone_device(device);
     }
+
+    #[cfg(target_os = "linux")]
+    pub fn take_system_stream_for_swap(&mut self) -> Option<super::stream::AudioStream> {
+        self.stream_manager.take_system_stream()
+    }
+    #[cfg(target_os = "linux")]
+    pub fn set_system_stream_after_swap(&mut self, stream: super::stream::AudioStream, device: Arc<AudioDevice>) {
+        self.stream_manager.set_system_stream(stream);
+        self.state.set_system_device(device.clone());
+        if let Some(monitor) = &self.device_monitor {
+            monitor.notify_mic_swapped(String::new(), Some(device.name.clone()));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn linux_stream_kind(&self, microphone: bool) -> Option<super::stream::LinuxStreamKind> {
+        self.stream_manager.linux_stream_kind(microphone)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn has_working_stream(&self, microphone: bool) -> bool {
+        self.stream_manager.has_working_stream(microphone)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn has_working_streams(&self) -> bool { self.stream_manager.has_working_streams() }
 
     /// Get reference to recording state for external access
     pub fn get_state(&self) -> &Arc<RecordingState> {
@@ -680,5 +754,44 @@ mod wake_tests {
         // Nonexistent device name fails at the `find` step — no audio hardware needed.
         // Asserts the wake is non-fatal (returns Err, does not panic).
         assert!(wake_audio_connection_sync("__no_such_device__").is_err());
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_shutdown_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use super::super::{stream::linux_clock_tests::test_stream, recording_state::DeviceType};
+
+    #[tokio::test]
+    async fn stop_keeps_acceptance_open_until_both_workers_finish() {
+        let mut manager = RecordingManager::new();
+        manager.device_monitor = None;
+        manager.state.start_recording().unwrap();
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        manager.state.set_audio_sender(sender);
+        let mic_finish = Arc::new(AtomicBool::new(false));
+        let sys_finish = Arc::new(AtomicBool::new(false));
+        for microphone in [true, false] {
+            let finish = if microphone { mic_finish.clone() } else { sys_finish.clone() };
+            let both = (mic_finish.clone(), sys_finish.clone());
+            let state = manager.state.clone();
+            let worker_finish = finish.clone();
+            let task = tokio::spawn(async move {
+                while !worker_finish.load(Ordering::Acquire) { tokio::task::yield_now().await; }
+                assert!(both.0.load(Ordering::Acquire) && both.1.load(Ordering::Acquire));
+                assert!(state.is_recording());
+                state.send_audio_chunk(AudioChunk { data: vec![1.0], sample_rate: 48000,
+                    timestamp: 0.0, chunk_id: 0, device_type: DeviceType::Microphone }).unwrap();
+            });
+            let stream = test_stream(if microphone { "mic" } else { "system" }, finish, task);
+            if microphone { manager.stream_manager.set_mic_stream(stream); }
+            else { manager.stream_manager.set_system_stream(stream); }
+        }
+        manager.stop_streams_and_force_flush().await.unwrap();
+        assert!(receiver.recv().await.is_some());
+        assert!(receiver.recv().await.is_some());
+        assert!(receiver.recv().await.is_none());
+        assert!(!manager.state.is_recording());
     }
 }

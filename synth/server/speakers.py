@@ -111,6 +111,25 @@ def speaker_index(content: dict[str, Any]) -> dict[str, int]:
     return order
 
 
+def confirm_uploaded(db, actor, meeting_id, transcript, actions, version, idempotency_key, store_version):
+    """Apply names confirmed during capture to the transcript version just stored."""
+    from pydantic import ValidationError
+    if actor['kind'] != 'user':
+        raise HTTPException(403, 'Solo una persona puede confirmar hablantes.')
+    meeting = db.execute('SELECT owner_id FROM meetings WHERE id=%s', (meeting_id,)).fetchone()
+    if not meeting or meeting['owner_id'] != actor['id']:
+        raise HTTPException(404, 'La reunión no está disponible.')
+    try:
+        batch = SpeakerBatch(actions=[{**action, 'expected_version': version} for action in actions])
+        content = transcript.model_dump()
+        for action in batch.actions:
+            content = apply_action(content, action)
+    except (ValidationError, ValueError, TypeError) as error:
+        raise HTTPException(422, 'Los hablantes confirmados no corresponden a esta transcripción.') from error
+    return store_version(db, actor, meeting_id, Transcript.model_validate(content),
+                         idempotency_key + ':speakers', 'transcript.speakers')
+
+
 def register(app, session_dependency, store_version) -> None:
     """Mount the route on the API app (kept here so app.py only gains one line)."""
 

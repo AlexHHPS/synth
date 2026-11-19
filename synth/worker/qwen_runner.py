@@ -16,32 +16,75 @@ from types import SimpleNamespace
 import wave
 
 
+ALIGNMENT_FAULTS = {'qwen_alignment_invalid_time', 'qwen_alignment_nonmonotonic',
+                    'qwen_alignment_incomplete', 'qwen_alignment_text_mismatch'}
+APPROXIMATE = 3
+
+
+def estimated_words(text, offset, duration):
+    """Spread the recognised words over their clip in proportion to their length.
+
+    Used only when the aligner cannot place them. The text is untouched and
+    every time stays inside the clip, so the words still land on the right
+    speaker turn to within a few seconds.
+    """
+    pieces = text.split()
+    total = sum(len(piece) for piece in pieces) or 1
+    words, position = [], 0
+    for piece in pieces:
+        start = offset + duration * position / total
+        position += len(piece)
+        end = offset + duration * position / total
+        words.append({'text': piece, 'start_ms': round(start * 1000), 'end_ms': round(end * 1000)})
+    return words
+
+
+def bounded_words(text, items, processor, offset, duration):
+    """Keep the aligner's order and clamp its times into the clip."""
+    last, bounded = 0.0, []
+    for item in items:
+        start = min(max(float(item.start_time), last), duration)
+        end = min(max(float(item.end_time), start), duration)
+        bounded.append(SimpleNamespace(text=item.text, start_time=start, end_time=end))
+        last = start
+    return restore_punctuation(text, bounded, processor, offset, duration)
+
+
 def align_chunk(aligner, clip, text, offset):
-    """Retry a boundary prediction with real silence, retaining strict times/text."""
+    """Place words in time. A clip the aligner cannot place never fails the meeting.
+
+    Returns (words, effort): 0 direct, 1-2 after giving the model silence
+    around a clipped boundary, 3 when the times had to be bounded or estimated.
+    """
     import numpy as np
     duration = len(clip) / 16000
-    aligned = aligner.generate(clip, text=text, language='Spanish')
+    attempts = (
+        lambda: aligner.generate(clip, text=text, language='Spanish').items,
+        # Forced alignment occasionally places the last word past a clipped
+        # boundary; trailing silence gives it context without changing the source.
+        lambda: aligner.generate(np.pad(clip, (0, 16000)), text=text, language='Spanish').items,
+        # Clipped leading phonemes need context on both edges; the exact
+        # leading offset is removed before validation.
+        lambda: [SimpleNamespace(text=i.text, start_time=i.start_time-1, end_time=i.end_time-1)
+                 for i in aligner.generate(np.pad(clip, (16000, 16000)), text=text, language='Spanish').items],
+    )
+    first = None
+    for effort, attempt in enumerate(attempts):
+        items = attempt()
+        if first is None:
+            first = items
+        try:
+            return restore_punctuation(text, items, aligner.aligner_processor, offset, duration), effort
+        except ValueError as error:
+            if str(error) not in ALIGNMENT_FAULTS:
+                raise
+            if str(error) in ('qwen_alignment_text_mismatch', 'qwen_alignment_incomplete'):
+                # The aligner split the words differently; more audio context cannot change that.
+                break
     try:
-        return restore_punctuation(text, aligned.items, aligner.aligner_processor, offset, duration), 0
-    except ValueError as error:
-        if str(error) not in {'qwen_alignment_invalid_time', 'qwen_alignment_nonmonotonic'}:
-            raise
-    # Forced alignment occasionally places the last word past a clipped audio
-    # boundary. Give the model a trailing silence context and infer again; never
-    # accept its padded duration as part of the source or relax validation.
-    aligned = aligner.generate(np.pad(clip, (0, 16000)), text=text, language='Spanish')
-    try:
-        return restore_punctuation(text, aligned.items, aligner.aligner_processor, offset, duration), 1
-    except ValueError as error:
-        if str(error) not in {'qwen_alignment_invalid_time', 'qwen_alignment_nonmonotonic'}:
-            raise
-    # Some clipped leading phonemes keep the same invalid prediction with
-    # trailing padding alone. Give both edges context and remove the exact
-    # leading offset before applying the unchanged source-time validation.
-    aligned = aligner.generate(np.pad(clip, (16000, 16000)), text=text, language='Spanish')
-    items = [SimpleNamespace(text=i.text, start_time=i.start_time-1, end_time=i.end_time-1)
-             for i in aligned.items]
-    return restore_punctuation(text, items, aligner.aligner_processor, offset, duration), 2
+        return bounded_words(text, first, aligner.aligner_processor, offset, duration), APPROXIMATE
+    except (ValueError, TypeError, IndexError):
+        return estimated_words(text, offset, duration), APPROXIMATE
 
 
 def save_decoded(path, content):
@@ -108,13 +151,20 @@ def decode_chunks(samples, generate, *, cache=None, cache_key=None, presence=Non
         else:
             result = generate(clip, language='Spanish', chunk_duration=30.0,
                               max_tokens=limit, temperature=0.0, prefill_step_size=512, verbose=False)
-            if result.generation_tokens >= limit:
-                if end-start <= 5*16000:
-                    raise ValueError('qwen_token_limit_reached')
+            if result.generation_tokens >= limit and end-start > 5*16000:
                 middle = (start+end)//2
                 saved['splits'][name] = middle
                 persist()
                 return decode(start, middle, has_speech) + decode(middle, end, has_speech)
+            if result.generation_tokens >= limit:
+                # A few seconds the model cannot finish (it loops on them) must
+                # not cost the whole meeting. Their text is withheld, never
+                # published half-decoded, and the span is marked for review.
+                item = {'text': '', 'generation_tokens': 0, 'speech_presence': has_speech,
+                        'decode_incomplete': True}
+                saved['chunks'][name] = item
+                persist()
+                return [{'start': start/16000, 'end': end/16000, **item}]
             if (not isinstance(result.text, str) or type(result.generation_tokens) is not int
                     or result.generation_tokens < 0
                     or ' '.join(s['text'] for s in (result.segments or [])).split() != result.text.split()):
@@ -132,7 +182,8 @@ def decode_chunks(samples, generate, *, cache=None, cache_key=None, presence=Non
         evidence = presence(samples[start:end]) if presence else None
         chunks.extend(decode(start, end, evidence))
     return {'text': ' '.join(s['text'] for s in chunks if s['text']), 'chunks': chunks,
-            'generation_tokens': sum(s['generation_tokens'] for s in chunks)}
+            'generation_tokens': sum(s['generation_tokens'] for s in chunks),
+            'incomplete_seconds': sum(s['end']-s['start'] for s in chunks if s.get('decode_incomplete'))}
 
 
 def restore_punctuation(text, items, processor, offset, duration):
@@ -225,7 +276,7 @@ def run(request):
     if ' '.join(s['text'] for s in chunks).split() != decoded['text'].split():
         raise ValueError('qwen_asr_incomplete')
     words = []
-    alignment_retries = 0
+    alignment_retries = approximate_chunks = 0
     aligner = load_model(request['aligner']) if any(s['text'].strip() for s in chunks) else None
     for chunk in chunks:
         text = chunk['text'].strip()
@@ -238,10 +289,11 @@ def run(request):
         aligned_words, retries = align_chunk(aligner, clip, text, start)
         words.extend(aligned_words)
         alignment_retries += retries
+        approximate_chunks += retries == APPROXIMATE
     return {'text': decoded['text'], 'segments': group_words(words), 'words': words,
             'elapsed_seconds': time.monotonic()-started, 'peak_mlx_gb': mx.get_peak_memory()/1e9,
             'asr_chunks': len(chunks), 'generation_tokens': decoded['generation_tokens'],
-            'alignment_retries': alignment_retries}
+            'alignment_retries': alignment_retries, 'approximate_chunks': approximate_chunks}
 
 
 if __name__ == '__main__':

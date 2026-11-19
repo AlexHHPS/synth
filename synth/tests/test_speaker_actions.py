@@ -188,3 +188,50 @@ class UploadCannotNameTests(SpeakerEndpointTests):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UploadedSpeakersTests(unittest.TestCase):
+    """Names confirmed while recording become the next version of the same upload."""
+
+    def setUp(self):
+        from synth.contracts.transcript import Transcript
+        self.transcript = Transcript.model_validate({
+            'language': 'es', 'duration_ms': 2000, 'model_fingerprint': 'synthetic',
+            'segments': [{'id': 's1', 'start_ms': 0, 'end_ms': 1000, 'text': 'Hola.', 'speaker_id': 'system:1'}]})
+        self.owner = {'id': 'owner', 'kind': 'user'}
+
+    def database(self, owner='owner'):
+        from unittest.mock import MagicMock
+        db = MagicMock()
+        db.execute.return_value.fetchone.return_value = {'owner_id': owner}
+        return db
+
+    def test_names_are_applied_to_the_uploaded_version_under_a_derived_key(self):
+        from synth.server.speakers import confirm_uploaded
+        stored = []
+        def store(db, actor, meeting_id, transcript, key, action):
+            stored.append((transcript.model_dump(), key, action))
+            return {'job_id': 'job', 'transcript_version': 2, 'reused': False}
+        result = confirm_uploaded(self.database(), self.owner, 'meeting', self.transcript,
+            [{'action': 'confirm', 'speaker_id': 'system:1', 'name': 'Persona sintética',
+              'employee_id': '22222222-2222-4222-8222-222222222222'}], 1, 'desktop:x', store)
+        self.assertEqual(result['transcript_version'], 2)
+        content, key, action = stored[0]
+        self.assertEqual((key, action), ('desktop:x:speakers', 'transcript.speakers'))
+        self.assertEqual(content['speakers']['system:1']['name'], 'Persona sintética')
+        self.assertIsNone(self.transcript.speakers)
+
+    def test_unknown_speakers_other_owners_and_other_actions_are_refused(self):
+        from fastapi import HTTPException
+        from synth.server.speakers import confirm_uploaded
+        store = lambda *args: self.fail('nothing may be stored')
+        confirm = {'action': 'confirm', 'speaker_id': 'system:1', 'name': 'Persona'}
+        for db, actions, status in (
+                (self.database(), [{**confirm, 'speaker_id': 'system:9'}], 422),
+                (self.database(), [{'action': 'reject', 'speaker_id': 'system:1'}], 422),
+                (self.database(), [{**confirm, 'expected_version': 7, 'surprise': True}], 422),
+                (self.database(owner='someone-else'), [confirm], 404)):
+            with self.subTest(actions=actions, status=status):
+                with self.assertRaises(HTTPException) as raised:
+                    confirm_uploaded(db, self.owner, 'meeting', self.transcript, actions, 1, 'desktop:x', store)
+                self.assertEqual(raised.exception.status_code, status)

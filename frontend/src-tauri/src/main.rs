@@ -3,13 +3,7 @@
     windows_subsystem = "windows"
 )]
 
-use log;
-use env_logger;
-
 fn main() {
-    std::env::set_var("RUST_LOG", "info");
-    env_logger::init();
-
     let arguments: Vec<String> = std::env::args().collect();
     if arguments.get(1).map(String::as_str) == Some("--verify-qwen-audio") {
         if arguments.len() != 4 { eprintln!("Expected app-data directory and a public audio fixture"); std::process::exit(2); }
@@ -22,7 +16,5 @@ fn main() {
         return;
     }
 
-    // Async logger will be initialized lazily when first needed (after Tauri runtime starts)
-    log::info!("Starting application...");
     app_lib::run();
 }

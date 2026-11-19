@@ -27,7 +27,7 @@ binary is licensed identically.
 Synth's frontend controls in frontend/src/synth/design-system are independently
 implemented with public open source React, Radix and Tailwind components.
 
-The Apple Silicon Synth package uses a pinned audio-only FFmpeg 8.0 build under
+The Apple Silicon Synth package uses a pinned FFmpeg 8.0 build under
 LGPL-2.1-or-later, invoked as a separate executable. Its corresponding unmodified
 source archive, build recipe and complete license are included under Resources/Notices.
 See https://ffmpeg.org/legal.html. Other platform builds require a separate licensing review.

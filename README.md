@@ -29,9 +29,11 @@ source, then keeps them in a library your team and your other systems can use.
 **The audio stays on your Mac. Your central library holds the knowledge.**
 
 > [!NOTE]
-> **New in 0.5** — readable minutes with tracked follow-ups, a glossary that
-> learns, questions to your meetings, an optional Google Calendar agenda, local
-> live captions and per-actor row level security.
+> **New in 0.6.11.** Import videos and attachments from this Mac or a read-only
+> Google Drive connection. Capture screen regions during a recording and use an
+> optional local model to describe what changed. Synth can recover interrupted
+> recordings and retry minutes automatically. Home and Library group meetings by
+> creation date.
 
 ## What you get
 
@@ -42,7 +44,7 @@ source, then keeps them in a library your team and your other systems can use.
 #### 🎙️&nbsp; Capture on the Mac
 
 - Microphone and system audio, **no meeting bot**.
-- Live captions and live voice identification, each in its own widget.
+- Live captions, speaker suggestions, and optional live agreements and tasks.
 - A floating reminder when a call starts; optional Calendar agenda.
 - A single speaker is a valid note.
 
@@ -51,7 +53,7 @@ source, then keeps them in a library your team and your other systems can use.
 
 #### 🧾&nbsp; Understand with sources
 
-- Minutes by topic: decisions, tasks, open questions, **each cited**.
+- Minutes by topic: decisions, tasks, open questions, **each cited**. A single pass covers typical meetings.
 - Owners only when someone committed; dates only when said.
 - Follow-ups from earlier meetings in the folder are tracked.
 - A glossary that learns names and fixes misspellings — the raw transcript is never rewritten.
@@ -98,7 +100,7 @@ flowchart LR
 | 💻 On the Mac | ☁️ In your central deployment |
 | :--- | :--- |
 | Capture, live ASR, diarization, enrollment and voice comparison. | Library text, versions, permissions, glossary, minutes and encrypted shared centroids. |
-| Temporary audio, deleted after analysis; interrupted audio expires within 24 hours while the host runs. | HTTPS API/MCP and your document worker. No recording upload endpoint. |
+| Temporary audio, deleted after analysis; interrupted audio expires after seven days while the host runs. | HTTPS API/MCP and your document worker. No recording upload endpoint. |
 | Local voice profiles encrypted with a Keychain-protected key. | Shared centroids encrypted with a server key kept outside the database. |
 
 > [!IMPORTANT]

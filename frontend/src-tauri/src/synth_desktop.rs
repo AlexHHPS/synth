@@ -54,6 +54,7 @@ pub async fn synth_enqueue_capture(app: AppHandle, folder_path: String, title: S
     if !consent_confirmed { return Err("Confirma el consentimiento antes de procesar la reunión.".into()); }
     let root = app.path().app_data_dir().map_err(|_| "No se encuentra la configuración local.")?.join("capture/raw");
     assert_capture_owner(&app, Path::new(&folder_path)).await?;
+    let capture_folder = PathBuf::from(&folder_path);
     let mut body = tokio::task::spawn_blocking(move || capture_receipt(&root, Path::new(&folder_path)))
         .await.map_err(|_| "No se pudo validar la captura.")??;
     body["title"] = Value::String(title);
@@ -64,7 +65,9 @@ pub async fn synth_enqueue_capture(app: AppHandle, folder_path: String, title: S
         if uuid::Uuid::parse_str(&id).is_err() { return Err("El evento no es válido.".into()); }
         body["calendar_event_id"] = Value::String(id);
     }
-    request_local(app, "POST".into(), "/v1/captures".into(), Some(body), 18383).await
+    let queued = request_local(app, "POST".into(), "/v1/captures".into(), Some(body), 18383).await?;
+    crate::synth_recovery::mark_enqueued(&capture_folder);
+    Ok(queued)
 }
 
 /// Legacy playback must not become an arbitrary native file read.
@@ -97,7 +100,7 @@ fn permitted(method: &str, path: &str) -> bool {
     if parts.len() == 2 {
         return match (method, parts[1]) {
             ("GET", "me" | "people" | "library" | "folders" | "search" | "integrations" | "glossary" | "tasks") => true,
-            ("POST", "folders" | "meetings" | "integrations" | "glossary" | "questions") => true,
+            ("POST", "folders" | "meetings" | "integrations" | "glossary" | "questions" | "live-notes") => true,
             _ => false,
         };
     }
@@ -121,7 +124,7 @@ fn permitted(method: &str, path: &str) -> bool {
             _ => false,
         },
         "tasks" | "decisions" => method == "PATCH" && parts.len() == 3,
-        "questions" => method == "GET" && parts.len() == 3,
+        "questions" | "live-notes" => method == "GET" && parts.len() == 3,
         "glossary" => match (method, parts.get(3).copied(), parts.len()) {
             ("PATCH", None, 3) => true,
             ("POST", Some("approve" | "discard" | "merge"), 4) => true,
@@ -162,8 +165,9 @@ fn permitted_host(method: &str, path: &str) -> bool {
     }
     match (method, path) {
         ("POST", "/v1/audio/setup/retry") => return true,
-        ("POST", "/v1/capture/context") => return true,
-        ("GET", "/v1/auth/state") | ("POST", "/v1/auth/login" | "/v1/auth/logout" | "/v1/auth/calendar") => return true,
+        ("GET" | "POST", "/v1/vision/setup") => return true,
+        ("POST", "/v1/capture/context" | "/v1/drive/browse") => return true,
+        ("GET", "/v1/auth/state" | "/v1/auth/drive") | ("POST", "/v1/auth/login" | "/v1/auth/logout" | "/v1/auth/calendar" | "/v1/auth/drive") => return true,
         ("GET", "/v1/status" | "/v1/tasks" | "/v1/voice") | ("POST", "/v1/captures" | "/v1/voice/enroll" | "/v1/voice/test" | "/v1/voice/delete" | "/v1/voice/share") => return true,
         _ => {},
     }
@@ -225,7 +229,7 @@ fn backend_url(config: Option<&Value>) -> Result<&str, String> {
     Ok(url)
 }
 
-async fn request_local<R: tauri::Runtime>(app: AppHandle<R>, method: String, path: String, body: Option<Value>, port: u16) -> Result<Value, String> {
+pub(crate) async fn request_local<R: tauri::Runtime>(app: AppHandle<R>, method: String, path: String, body: Option<Value>, port: u16) -> Result<Value, String> {
     let encoded = body.as_ref().map(|v| v.to_string()).unwrap_or_default();
     if encoded.len() > 1024 * 1024 {
         return Err("El contenido supera el límite de esta operación.".into());
@@ -250,6 +254,21 @@ async fn request_local<R: tauri::Runtime>(app: AppHandle<R>, method: String, pat
     Ok(value)
 }
 
+/// One client per timeout for the life of the app: connections to the local
+/// host and to the service are reused instead of opened for every request.
+fn shared_client(timeout: Duration) -> Result<reqwest::Client, String> {
+    static CLIENTS: std::sync::Mutex<Vec<(Duration, reqwest::Client)>> = std::sync::Mutex::new(Vec::new());
+    let mut clients = CLIENTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((_, client)) = clients.iter().find(|(known, _)| *known == timeout) { return Ok(client.clone()); }
+    let client = reqwest::Client::builder()
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .build().map_err(|_| "No se pudo iniciar la conexión local.")?;
+    clients.push((timeout, client.clone()));
+    Ok(client)
+}
+
 /// Native-owned authentication shared by ordinary requests and draft streaming.
 pub(crate) async fn product_connection<R: tauri::Runtime>(app: &AppHandle<R>, port: u16, timeout: Duration) -> Result<(reqwest::Client, String, String), String> {
     let directory = app.path().app_data_dir().map_err(|_| "No se encuentra la configuración local.")?;
@@ -259,11 +278,7 @@ pub(crate) async fn product_connection<R: tauri::Runtime>(app: &AppHandle<R>, po
     if token.is_empty() {
         return Err("La clave de acceso local está vacía.".into());
     }
-    let client = reqwest::Client::builder()
-        .timeout(timeout)
-        .redirect(reqwest::redirect::Policy::none())
-        .no_proxy()
-        .build().map_err(|_| "No se pudo iniciar la conexión local.")?;
+    let client = shared_client(timeout)?;
     let config = if port == 18280 {
         let config_path = directory.join("backend-config.json");
         if config_path.exists() {
@@ -299,13 +314,24 @@ pub async fn capture_identity<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<S
     capture_identity_value(&state, &key)
 }
 
+/// The same check for a capture already in progress, telling a definite
+/// sign-out (None) apart from a host that could not answer (Err).
+pub async fn capture_identity_state<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<Option<String>, String> {
+    let state = request_local(app.clone(), "GET".into(), "/v1/auth/capture-identity".into(), None, 18383).await?;
+    if state["signed_in"] != true { return Ok(None); }
+    let directory = app.path().app_data_dir().map_err(|_| "No se encuentra la configuración local.")?;
+    let key = std::fs::read_to_string(directory.join("desktop-api-key")).map_err(|_| "No se pudo verificar la sesión local.")?;
+    capture_identity_value(&state, &key).map(Some)
+}
+
 pub(crate) async fn assert_capture_owner<R: tauri::Runtime>(app: &AppHandle<R>, folder: &Path) -> Result<(), String> {
     let root = app.path().app_data_dir().map_err(|_| "No se encuentra la configuración local.")?.join("capture/raw")
         .canonicalize().map_err(|_| "No se encuentra la carpeta de captura.")?;
     let folder = folder.canonicalize().map_err(|_| "No se encuentra la captura.")?;
     if !folder.starts_with(root) { return Err("La captura no pertenece a esta app.".into()); }
     // 0.4.4 archives had no live watermark. New captures always bind an owner.
-    if !folder.join("sources/progress.json").exists() { return Ok(()); }
+    let media_folder = folder.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with("media-"));
+    if !media_folder && !folder.join("sources/progress.json").exists() { return Ok(()); }
     let path = folder.join("capture-owner.json");
     if path.symlink_metadata().map_err(|_| "No se pudo verificar el propietario de la captura.")?.file_type().is_symlink() {
         return Err("El propietario de la captura no es válido.".into());
@@ -315,7 +341,8 @@ pub(crate) async fn assert_capture_owner<R: tauri::Runtime>(app: &AppHandle<R>, 
         .take(4097).read_to_end(&mut bytes).map_err(|_| "No se pudo verificar el propietario de la captura.")?;
     if bytes.len()>4096 { return Err("El propietario de la captura no es válido.".into()); }
     let binding:Value=serde_json::from_slice(&bytes).map_err(|_| "El propietario de la captura no es válido.")?;
-    if binding["identity"].as_str()!=Some(capture_identity(app).await?.as_str()) {
+    if (media_folder && binding["version"] != 1)
+        || binding["identity"].as_str()!=Some(capture_identity(app).await?.as_str()) {
         return Err("Esta captura pertenece a otra sesión.".into());
     }
     Ok(())
@@ -397,6 +424,7 @@ mod tests {
         assert!(permitted_host("POST", "/v1/voice/captures/00000000-0000-4000-8000-000000000001/speakers"));
         assert!(!permitted_host("POST", "/v1/voice/captures/not-a-uuid/speakers"));
         assert!(permitted_host("GET", "/v1/auth/state"));
+        assert!(permitted_host("GET", "/v1/auth/drive"));
         assert!(permitted_host("POST", "/v1/auth/login"));
         assert!(!permitted_host("GET", "/v1/auth/access"));
         assert!(permitted_host("POST", "/v1/tasks/00000000-0000-4000-8000-000000000001/retry"));

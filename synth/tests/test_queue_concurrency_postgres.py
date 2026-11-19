@@ -86,6 +86,29 @@ class AdmissionTests(unittest.TestCase):
             current = queue.claim(db, "three")
             self.assertEqual(current["payload"]["transcript_version"], 2)
 
+    def test_a_job_that_keeps_losing_its_worker_is_closed_instead_of_reclaimed_for_ever(self):
+        with self.connect() as db:
+            first = queue.claim(db, "one", max_running=1)
+            for attempt in range(queue.MAX_ATTEMPTS):
+                db.execute("UPDATE jobs SET lease_until=now()-interval '1 second' WHERE id=%s", (first["id"],))
+                again = queue.claim(db, "one", max_running=1)
+                if attempt < queue.MAX_ATTEMPTS - 1:
+                    self.assertEqual(again["id"], first["id"])
+            # The slot went to another meeting and the poisoned one says why.
+            self.assertNotEqual(again["id"], first["id"])
+            row = db.execute("SELECT state,error_code,attempts FROM jobs WHERE id=%s", (first["id"],)).fetchone()
+            self.assertEqual((row["state"], row["error_code"], row["attempts"]), ("failed", "attempts_exhausted", queue.MAX_ATTEMPTS))
+            self.assertEqual(db.execute("SELECT state FROM meetings WHERE id=%s", (first["meeting_id"],)).fetchone()["state"], "failed")
+
+    def test_a_running_job_for_a_replaced_transcript_does_not_stay_running(self):
+        with self.connect() as db:
+            old = queue.claim(db, "one", max_running=1)
+            db.execute("""INSERT INTO transcript_versions(meeting_id,version,content,content_hash,model_fingerprint,search_text)
+                VALUES (%s,2,'{}','newer','synthetic','')""", (old["meeting_id"],))
+            db.execute("UPDATE jobs SET lease_until=now()-interval '1 second' WHERE id=%s", (old["id"],))
+            queue.claim(db, "two", max_running=1)
+            self.assertEqual(db.execute("SELECT state FROM jobs WHERE id=%s", (old["id"],)).fetchone()["state"], "cancelled")
+
     def test_single_lane_remains_an_explicit_capacity_option(self):
         with self.connect() as db:
             self.assertIsNotNone(queue.claim(db, "one", max_running=1))

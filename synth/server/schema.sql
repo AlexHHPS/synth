@@ -635,3 +635,22 @@ DO $$ BEGIN
     END IF;
 END $$;
 INSERT INTO schema_versions(version) VALUES (15) ON CONFLICT DO NOTHING;
+
+-- v16: when the meeting happened, and the lookups every request makes.
+ALTER TABLE meetings ADD COLUMN IF NOT EXISTS captured_at timestamptz;
+CREATE INDEX IF NOT EXISTS meetings_folder ON meetings(folder_id);
+CREATE INDEX IF NOT EXISTS meetings_owner ON meetings(owner_id);
+CREATE INDEX IF NOT EXISTS meetings_recent ON meetings(created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS meetings_calendar_event ON meetings(calendar_event_id) WHERE calendar_event_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS jobs_meeting ON jobs(meeting_id, kind, state);
+CREATE INDEX IF NOT EXISTS folder_memberships_principal ON folder_memberships(principal_id);
+INSERT INTO schema_versions(version) VALUES (16) ON CONFLICT DO NOTHING;
+
+-- v17: provisional notes while recording share the questions queue; they are not questions to the meetings.
+ALTER TABLE questions ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'ask';
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='questions_kind_check') THEN
+        ALTER TABLE questions ADD CONSTRAINT questions_kind_check CHECK (kind IN ('ask', 'live'));
+    END IF;
+END $$;
+INSERT INTO schema_versions(version) VALUES (17) ON CONFLICT DO NOTHING;

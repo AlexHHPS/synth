@@ -7,6 +7,7 @@ from uuid import UUID
 
 from fastapi import HTTPException
 
+from . import document_scope
 from .db import authorize_meeting
 
 
@@ -46,5 +47,6 @@ def register(app, session_dependency) -> None:
             OR version=%s) ORDER BY version DESC LIMIT 1""", (meeting_id, version, meeting_id, version)).fetchone()
         if not row:
             raise HTTPException(404, "Todavía no hay un acta para la transcripción actual.")
+        row = document_scope.for_readers(db, meeting_id, row)
         return {"version": row["version"], "transcript_version": row["transcript_version"], "created_at": row["created_at"],
                 "minutes": as_v2(row["content"])}

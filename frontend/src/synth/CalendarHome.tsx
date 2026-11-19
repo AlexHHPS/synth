@@ -1,10 +1,12 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CalendarDays, ChevronLeft, ChevronRight, Clock3, FileText, RefreshCw, Users } from 'lucide-react';
+import { CalendarDays, ChevronLeft, ChevronRight, Clock3, RefreshCw, Users } from 'lucide-react';
 import { Button } from './design-system/button';
 import { Folder, Meeting, message, pipelineRequest, request } from './api';
 import { MeetingPanel } from './MeetingPanel';
+import { MeetingTimeline } from './MeetingTimeline';
+import { dateLabel, dateOf, localDay } from './meetingDates';
 import './calendar.css';
 
 export interface CalendarEvent {
@@ -100,21 +102,15 @@ export function GoogleCalendarConnection({ refreshToken = 0 }: { refreshToken?: 
   </section>;
 }
 
-function localDay(value: string) { return value.length === 10 ? value : new Date(value).toLocaleDateString('sv-SE'); }
-function dateOf(value: string) { return value.length === 10 ? new Date(value + 'T12:00:00') : new Date(value); }
 function hours(event: CalendarEvent['content']) {
   return event.all_day ? 'Todo el día' : `${dateOf(event.start).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })} – ${dateOf(event.end).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })}`;
 }
-function dateLabel(value: string) {
-  const today = new Date(), yesterday = new Date(); yesterday.setDate(today.getDate()-1);
-  const key = localDay(value);
-  return key === localDay(today.toISOString()) ? 'Hoy' : key === localDay(yesterday.toISOString()) ? 'Ayer' : dateOf(value).toLocaleDateString('es', { weekday: 'short', day: 'numeric', month: 'short' });
-}
 
-export function CalendarHome({ folders, meetings, loading, refreshToken, onOpen, onConnect, onPrepare, onRefresh }: {
+export function CalendarHome({ folders, meetings, loading, refreshToken, onOpen, onConnect, onPrepare, onRefresh, onLoadMore }: {
   folders: Folder[]; meetings: Meeting[]; loading: boolean; refreshToken: number;
   onOpen: (id: string) => void; onConnect: () => void; onPrepare: (pack: CalendarPreparation) => void;
   onRefresh?: () => void;
+  onLoadMore?: () => void;
 }) {
   const calendar = useCalendar(refreshToken);
   const [page, setPage] = useState(0);
@@ -133,12 +129,6 @@ export function CalendarHome({ folders, meetings, loading, refreshToken, onOpen,
   if (!groups.has(today)) groups.set(today, []);
   const days = [...groups.keys()].sort(), lastPage = Math.max(0, Math.ceil(days.length/3)-1);
   const visibleDays = days.slice(Math.min(page, lastPage)*3, Math.min(page, lastPage)*3+3);
-  const history = new Map<string, Meeting[]>();
-  for (const meeting of meetings) {
-    const key = meeting.created_at ? dateLabel(meeting.created_at) : 'Sin fecha';
-    if (!history.has(key)) history.set(key, []);
-    history.get(key)!.push(meeting);
-  }
   async function openEvent(event: CalendarEvent) {
     const ticket = ++version.current;
     setSelected(event); setPack(null); setError(''); setPreparing(true);
@@ -187,7 +177,9 @@ export function CalendarHome({ folders, meetings, loading, refreshToken, onOpen,
     <section aria-label="Reuniones recientes" className="calendar-history">
       {loading && !meetings.length && <p role="status">Cargando tus notas…</p>}
       {!loading && !meetings.length && <p>Tus notas aparecerán aquí al terminar la primera reunión.</p>}
-      {[...history].map(([day, entries]) => <section key={day}><h2>{day}</h2>{entries.map(meeting => <button type="button" className="calendar-history-row" key={meeting.id} onClick={() => onOpen(meeting.id)}><span className="calendar-history-icon"><FileText size={22} /></span><span><strong>{meeting.title}</strong><small>{folders.find(f => f.id === meeting.folder_id)?.name ?? 'Privada · Sin carpeta'}</small></span><time>{meeting.created_at ? new Date(meeting.created_at).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' }) : ''}</time></button>)}</section>)}
+      <MeetingTimeline meetings={meetings} folders={folders} onOpen={onOpen} />
+      {onLoadMore && <Button className="voice-meeting-more" variant="outline" size="sm" loading={loading}
+        onClick={onLoadMore}>Cargar más reuniones</Button>}
     </section>
     <MeetingPanel id="calendar-preparation" title="Preparar reunión" open={!!selected} onClose={close} footer={pack ? `${pack.glossary.length} términos · ${pack.passages.length} antecedentes con fuente` : 'Contexto de tu biblioteca'}>
       {selected && <div className="calendar-briefing"><h2>{selected.content.title}</h2><p><Clock3 size={16} /> {dateLabel(selected.content.start)} · {hours(selected.content)}</p>

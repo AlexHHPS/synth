@@ -43,6 +43,9 @@ for directory in ['server','worker','speakers','contracts','scripts']:
         digest.update(str(path.relative_to(ROOT)).encode());digest.update(path.read_bytes())
 for path in [ROOT/'synth/desktop_entry.py',ROOT/'synth/worker/qwen-runtime.requirements.txt',ROOT/'synth/worker/qwen-model-lock.json',ROOT/'synth/host-build-requirements.txt']:
     digest.update(path.read_bytes())
+for path in sorted((ROOT/'synth/speakers/native/Sources').rglob('*.swift')):
+    digest.update(str(path.relative_to(ROOT)).encode())
+    digest.update(path.read_bytes())
 build_info=OUTPUT/'host-build.json'
 build_info.write_text(json.dumps({'id':digest.hexdigest(),'version':json.loads((ROOT/'frontend/package.json').read_text())['version']})+'\n')
 command = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--onedir",
@@ -61,6 +64,7 @@ command += ["--add-binary", str(ROOT / "synth/.runtime/swift-build/release/synth
 live_manifest = OUTPUT / MANIFEST
 live_manifest.write_text(json.dumps(describe(ROOT/'synth/worker'), sort_keys=True)+'\n')
 command += data_arguments(ROOT/'synth/worker', live_manifest)
+command += ["--add-data", str(ROOT / "synth/worker/vision_runner.py") + ":synth/worker"]
 command += ["--add-data", str(ROOT / "synth/scripts/setup-qwen.py") + ":synth/scripts",
             "--add-data", str(ROOT / "synth/speakers/thresholds.json") + ":synth/speakers",
             "--add-data", str(build_info) + ":."]
@@ -74,5 +78,5 @@ for source, destination in [
 # numpy is used by the microphone bleed gate (synth/worker/bleed.py).
 command += ["--collect-submodules", "numpy"]
 command += [str(ROOT / "synth/desktop_entry.py")]
-subprocess.run(["rtk", "proxy", *command], cwd=ROOT, check=True)
+subprocess.run(command, cwd=ROOT, check=True)
 print("HOST_PACKAGE_BUILT")

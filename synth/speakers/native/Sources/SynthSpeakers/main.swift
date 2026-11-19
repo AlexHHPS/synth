@@ -42,6 +42,10 @@ struct SynthSpeakers {
     static func main() async {
         do {
             let args = CommandLine.arguments
+            if args.count == 4 && args[1] == "media-text" {
+                try save(["text": try MediaText.read(args[2])], args[3])
+                return
+            }
             if args.count == 4 && args[1] == "serve" {
                 let runtime = try ResidentSpeakers(models: URL(fileURLWithPath: args[2]),
                                                    directory: URL(fileURLWithPath: args[3]))

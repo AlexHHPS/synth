@@ -42,7 +42,7 @@ def context_still_current(original, keys, aliases, fresh, fresh_keys, fresh_alia
 def load_context(db, meeting_id, transcript: dict[str, Any], notes: str) -> tuple[MeetingContext, dict[str, Any]]:
     """Context for one meeting plus the private key map (P1 → task id) used when persisting."""
     scope = context_scope.snapshot(db,meeting_id,worker=True)
-    meeting = db.execute("SELECT id,title,folder_id,owner_id,created_at FROM meetings WHERE id=%s", (meeting_id,)).fetchone()
+    meeting = db.execute("SELECT id,title,folder_id,owner_id,created_at,COALESCE(captured_at,created_at) AS held_at FROM meetings WHERE id=%s", (meeting_id,)).fetchone()
     folder = None
     glossary: list[dict[str, Any]] = []
     open_tasks: list[dict[str, Any]] = []
@@ -70,10 +70,11 @@ def load_context(db, meeting_id, transcript: dict[str, Any], notes: str) -> tupl
             keys["decisions"][f"D{index}"] = row["id"]
             open_decisions.append({"key": f"D{index}", "decision": row["decision"]})
     calendar = db.execute('SELECT calendar_context_for_meeting(%s) AS content', (meeting_id,)).fetchone()['content']
-    context = MeetingContext(title=meeting["title"], started_at=meeting["created_at"], folder=folder,
+    context = MeetingContext(title=meeting["title"], started_at=meeting["held_at"], folder=folder,
                              participants=confirmed_participants(transcript), glossary=tuple(dict(g) for g in glossary),
                              open_tasks=tuple(open_tasks), open_decisions=tuple(open_decisions), notes=notes or "",
-                             extra={'calendar': calendar} if calendar else {})
+                             extra={'calendar': calendar} if calendar else {},
+                             media=tuple(transcript.get('media_observations') or ()))
     return context, {**keys, "owner_id": meeting["owner_id"], "folder_id": meeting["folder_id"], 'context_scope':scope}
 
 

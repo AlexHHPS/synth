@@ -31,6 +31,13 @@ class CaptureVocabularyTests(unittest.TestCase):
         self.stage()
         self.assertEqual(load(self.state, self.folder, self.capture), ['Synth','OmniRoute'])
 
+    def test_a_late_attach_still_uses_the_preparation_of_its_own_capture(self):
+        import os
+        started = time.time()-900
+        os.utime(self.folder/'capture-owner.json', (started, started))
+        self.stage(created_at=started-5)
+        self.assertEqual(load(self.state, self.folder, self.capture), ['Synth','OmniRoute'])
+
     def test_restart_keeps_exact_original_inference_vocabulary_after_another_preparation(self):
         self.stage(); first = load(self.state, self.folder, self.capture)
         self.stage(terms=['Otro cliente'])

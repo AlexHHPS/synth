@@ -4,6 +4,7 @@ from dataclasses import asdict
 import hashlib
 import json
 import logging
+import sys
 import os
 import signal
 import threading
@@ -14,12 +15,28 @@ from psycopg.types.json import Jsonb
 from synth.server.db import audit, connect
 from . import answers, glossary_triage, generations
 from .minutes import generate_v2
+from .minutes_single import generate_consolidated
 from .glossary_correction import correct, correct_aliases, mine
 from .minutes_store import alias_terms, context_still_current, learn_aliases, load_context, persist_items, store_candidates, store_corrected
 from .omniroute import COMBO, completion
-from .queue import capacity, checkpoint, claim, finish, heartbeat
+from .queue import capacity, checkpoint, claim, defer, finish, heartbeat
 
 LOG = logging.getLogger("synth.worker")
+# "consolidated": one pass per transcript window. "sectioned": the 0.5 pipeline, kept to roll back.
+STRATEGY = os.environ.get("SYNTH_MINUTES_STRATEGY", "consolidated")
+# From this attempt on, the proven sectioned pipeline writes the acta: a meeting the
+# one-pass prompt cannot handle still gets minutes instead of failing for ever.
+SECTIONED_FROM_ATTEMPT = 3
+# Failures that another attempt cannot change: the job is no longer this worker's.
+FINAL_CODES = {"generation_fenced", "job_lease_lost", "generation_closed"}
+# The context (glossary, open commitments) is read once per pass. If it changed
+# while writing, the acta is written again with the new one instead of failing.
+CONTEXT_PASSES = 3
+
+
+class ContextRevised(ValueError):
+    """The glossary or the open commitments changed while writing: write again. Unlike a
+    change of who may read the meeting, which always stops the job."""
 STOP = threading.Event()
 WORKER = str(uuid4())
 
@@ -28,7 +45,7 @@ def run(job):
     payload, jid, attempt = job["payload"], job["id"], job["attempts"]
     generation = None
     binding = None
-    alive, lost = threading.Event(), threading.Event()
+    alive, lost, previews = threading.Event(), threading.Event(), threading.Event()
 
     def renew():
         while not alive.wait(20):
@@ -53,8 +70,26 @@ def run(job):
             if generation is not None:
                 # The event and its acoustic/text checkpoint commit together.
                 for index, topic in enumerate((value.get("minutes") or {}).get("topics") or []):
-                    generations.append(db, generation, job, WORKER, f"topic:{index}", "topic",
-                                       {"index": index, "topic": topic})
+                    emit_topic(db, index, topic)
+
+    def emit_topic(db, index, topic):
+        # A topic can grow when the next window continues it, so the key carries its content.
+        content = {"index": index, "topic": topic}
+        digest = hashlib.sha256(json.dumps(content, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
+        generations.append(db, generation, job, WORKER, f"topic:{index}:{digest}", "topic", content)
+
+    def draft(index, topic):
+        """A topic as the model finishes writing it; replaced by the validated one."""
+        if generation is None or lost.is_set() or previews.is_set():
+            return
+        try:
+            with connect() as db:
+                emit_topic(db, index, topic)
+        except Exception:
+            # A preview is never worth the acta, and readers place drafts by
+            # position: after one is lost the rest wait for the validated topics.
+            previews.set()
+            LOG.info("document_draft_skipped job=%s", jid)
 
     def fingerprint(context,keys,aliases):
         return hashlib.sha256(json.dumps({'context':asdict(context),'keys':keys,'aliases':aliases},
@@ -63,7 +98,7 @@ def run(job):
     def check_context(db):
         fresh,fresh_keys = load_context(db,job['meeting_id'],transcript,payload['human_notes'])
         if not context_still_current(context,keys,aliased,fresh,fresh_keys,alias_terms(db,job['meeting_id'])):
-            raise ValueError('generation_context_changed')
+            raise ContextRevised('generation_context_changed')
 
     thread = threading.Thread(target=renew, daemon=True)
     thread.start()
@@ -75,17 +110,12 @@ def run(job):
             aliased = alias_terms(db, job["meeting_id"])
             created_generation = generations.begin(db, job, WORKER)
         generation = created_generation
-        binding = fingerprint(context,keys,aliased)
         previous = job['checkpoint'] or {}
-        state = dict(previous) if previous.get('context_binding') == binding else {}
-        state['context_binding'] = binding
-        if state.get("minutes"):
-            save(state)
 
         def save_part(name, value):
             state[name] = value
             save(state)
-        def complete(messages, tokens):
+        def complete(messages, tokens, on_delta=None):
             key = generations.response_key(messages, tokens, COMBO,context_binding=binding)
             with connect() as db:
                 generations.fence(db, job, WORKER)
@@ -93,28 +123,55 @@ def run(job):
                 cached = generations.cached_response(db, job, key)
             if cached is not None:
                 return cached
-            response = completion(messages, max_tokens=tokens)
+            response = (completion(messages, max_tokens=tokens) if on_delta is None
+                        else completion(messages, max_tokens=tokens, on_delta=on_delta))
             # Save the original reply before a parser/validator can reject it.
             with connect() as db:
                 check_context(db)
                 generations.save_response(db, job, WORKER, key, response)
             return response
-        # Glossary correction: a new version on top of the raw ASR, decided before the minutes.
-        if "glossary" not in state:
-            # The model-decided correction is off by default (it missed the quality thresholds). What runs instead
-            # is the alias correction: registered «sounds like» spellings become their term, with no model.
-            if os.environ.get("SYNTH_GLOSSARY_AUTOCORRECT") == "1":
-                corrected, doubtful, _ = correct(transcript, list(context.glossary), complete, payload["transcript_version"])
-            elif os.environ.get("SYNTH_GLOSSARY_ALIASES", "1") == "1":
-                corrected, doubtful = correct_aliases(transcript, aliased, payload["transcript_version"]), []
-            else:
-                corrected, doubtful = None, []
-            save_part("glossary", {"corrected": corrected, "doubtful": doubtful})
-        corrected = state["glossary"]["corrected"]
-        source = corrected or transcript
-        # Minutes v2: small sectioned calls through Hermes/instant-combo, resumable per topic.
-        content, markdown, responses = generate_v2(source, context, complete, state.get("minutes"),
-                                                   lambda value: save_part("minutes", value))
+
+        for attempt_pass in range(CONTEXT_PASSES):
+            if attempt_pass:
+                with connect() as db:
+                    context, keys = load_context(db, job["meeting_id"], transcript, payload["human_notes"])
+                    aliased = alias_terms(db, job["meeting_id"])
+            try:
+                binding = fingerprint(context,keys,aliased)
+                state = dict(previous) if previous.get('context_binding') == binding else {}
+                state['context_binding'] = binding
+                if state.get("minutes"):
+                    save(state)
+                # Glossary correction (O3-A05): a new version on top of the raw ASR, decided before the minutes.
+                if "glossary" not in state:
+                    # The model-decided correction is off by default (D3.3: it missed both D0.9 thresholds). What runs instead
+                    # is the alias correction (D3.4): registered «sounds like» spellings become their term, with no model.
+                    if os.environ.get("SYNTH_GLOSSARY_AUTOCORRECT") == "1":
+                        corrected, doubtful, _ = correct(transcript, list(context.glossary), complete, payload["transcript_version"])
+                    elif os.environ.get("SYNTH_GLOSSARY_ALIASES", "1") == "1":
+                        corrected, doubtful = correct_aliases(transcript, aliased, payload["transcript_version"]), []
+                    else:
+                        corrected, doubtful = None, []
+                    save_part("glossary", {"corrected": corrected, "doubtful": doubtful})
+                corrected = state["glossary"]["corrected"]
+                source = corrected or transcript
+                if STRATEGY == "sectioned" or attempt >= SECTIONED_FROM_ATTEMPT:
+                    # A one-pass checkpoint is not a sectioned one: start the sections afresh.
+                    sectioned = state.get("minutes") if "strategy" not in (state.get("minutes") or {}) else None
+                    content, markdown, responses = generate_v2(
+                        source, context, lambda messages, tokens: complete(messages, tokens),
+                        sectioned, lambda value: save_part("minutes", value))
+                else:
+                    content, markdown, responses = generate_consolidated(
+                        source, context, complete, state.get("minutes"),
+                        lambda value: save_part("minutes", value), draft)
+                with connect() as db:
+                    check_context(db)
+                break
+            except ContextRevised:
+                if attempt_pass == CONTEXT_PASSES - 1:
+                    raise
+                LOG.info("document_context_changed job=%s pass=%s", jid, attempt_pass + 1)
         if lost.is_set():
             raise ValueError("job_lease_lost")
         with connect() as db:
@@ -153,6 +210,13 @@ def run(job):
         code = str(error) if isinstance(error, ValueError) and str(error).replace("_", "").isalnum() and len(str(error)) < 80 else "document_processing_failed"
         with connect() as db:
             db.execute("SELECT id FROM meetings WHERE id=%s FOR UPDATE", (job["meeting_id"],))
+            if code not in FINAL_CODES and defer(db, jid, WORKER, attempt, code):
+                if generation is not None:
+                    # This attempt's preview ends here; the next attempt starts its own.
+                    db.execute("UPDATE document_generations SET state='superseded',updated_at=now() WHERE id=%s", (generation,))
+                audit(db, None, "document.retry", job["meeting_id"], {"job_id": str(jid), "error_code": code, "attempt": attempt})
+                LOG.warning("document_deferred job=%s attempt=%s code=%s cause=%s", jid, attempt, code, type(error).__name__)
+                return
             if finish(db, jid, WORKER, attempt, code):
                 if generation is not None:
                     generations.close(db, generation, job, "failed")
@@ -168,7 +232,8 @@ def run(job):
 
 
 def main():
-    logging.basicConfig(level=logging.INFO)
+    # stdout: the platform files everything written to stderr as an error.
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
     signal.signal(signal.SIGTERM, lambda *_: STOP.set())
     signal.signal(signal.SIGINT, lambda *_: STOP.set())
     # Questions to the meetings run beside the minutes queue, so a long minutes job does not hold them back.

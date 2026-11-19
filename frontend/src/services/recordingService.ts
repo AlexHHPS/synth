@@ -8,6 +8,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 
+export type StopOutcome = 'stopped' | 'already_stopping' | 'not_active';
+
 export interface RecordingState {
   capture_id?: string | null;
   transcription_state?: 'waiting' | 'active';
@@ -106,9 +108,9 @@ export class RecordingService {
   /**
    * Stop recording and save to file
    * @param savePath - Path to save audio file
-   * @returns Promise<void>
+   * @returns The shutdown ownership outcome
    */
-  async stopRecording(savePath: string): Promise<void> {
+  async stopRecording(savePath: string): Promise<StopOutcome> {
     return invoke('stop_recording', {
       args: { save_path: savePath }
     });
@@ -204,8 +206,8 @@ export class RecordingService {
    * @param callback - Function to call when the mic is switched to a new device
    * @returns Promise that resolves to unlisten function
    */
-  async onMicDeviceSwitched(callback: (payload: { device_name: string }) => void): Promise<UnlistenFn> {
-    return listen<{ device_name: string }>('mic-device-switched', (event) => {
+  async onMicDeviceSwitched(callback: (payload: { device_name: string; device_label?: string }) => void): Promise<UnlistenFn> {
+    return listen<{ device_name: string; device_label?: string }>('mic-device-switched', (event) => {
       callback(event.payload);
     });
   }
@@ -227,8 +229,8 @@ export class RecordingService {
    * @param callback - Function to call when the mic swap fails
    * @returns Promise that resolves to unlisten function
    */
-  async onMicSwapFailed(callback: (payload: { error: string; device_name: string }) => void): Promise<UnlistenFn> {
-    return listen<{ error: string; device_name: string }>('mic-swap-failed', (event) => {
+  async onMicSwapFailed(callback: (payload: { error: string; device_name: string; device_label?: string }) => void): Promise<UnlistenFn> {
+    return listen<{ error: string; device_name: string; device_label?: string }>('mic-swap-failed', (event) => {
       callback(event.payload);
     });
   }
@@ -239,8 +241,8 @@ export class RecordingService {
    * @param callback - Function to call when mic recovery is exhausted
    * @returns Promise that resolves to unlisten function
    */
-  async onMicRecoveryExhausted(callback: (payload: { device_name: string }) => void): Promise<UnlistenFn> {
-    return listen<{ device_name: string }>('mic-recovery-exhausted', (event) => {
+  async onMicRecoveryExhausted(callback: (payload: { device_name: string; device_label?: string }) => void): Promise<UnlistenFn> {
+    return listen<{ device_name: string; device_label?: string }>('mic-recovery-exhausted', (event) => {
       callback(event.payload);
     });
   }

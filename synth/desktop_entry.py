@@ -87,6 +87,11 @@ if __name__ == "__main__":
         result = audio_setup.status()
         print(json.dumps({'first_run':result,'isolated_app_data':str(directory)}))
         sys.exit(0 if result['state']=='ready' else 1)
+    elif "--setup-vision" in sys.argv:
+        from synth.worker.media_vision import setup
+        from synth.worker.desktop_pipeline import APPDATA
+        setup(APPDATA)
+        print("SYNTH_VISION_READY")
     elif "--setup-audio" in sys.argv:
         from synth.server.audio_setup import load_installer
         sys.exit(load_installer().main([argument for argument in sys.argv[1:] if argument != '--setup-audio']))

@@ -34,4 +34,14 @@ with tempfile.TemporaryDirectory() as temporary:
     assert all(not path.exists() for path in imported_formats)
     assert current.exists() and document.exists() and original.exists()
     assert (raw / "link.wav").is_symlink()
+    # A capture that was never transcribed outlives the day; it is removed after a week.
+    pending = raw / "Daily_2026-11-10_09-00_abc" / "sources"
+    pending.mkdir(parents=True)
+    (pending / "progress.json").write_text("{}")
+    track = pending / "microphone.wav"
+    track.write_bytes(b"fixture")
+    os.utime(track, (now - 90000, now - 90000))
+    assert module.sweep_native(raw, now) == 0 and track.exists()
+    os.utime(track, (now - 8 * 86400, now - 8 * 86400))
+    assert module.sweep_native(raw, now) == 1 and not track.exists()
 print("RETENTION_WALK_OK; expired owned audio removed; original and text preserved")

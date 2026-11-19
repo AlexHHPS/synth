@@ -27,6 +27,25 @@ def validate_samples(value):
     return value
 
 
+def decode_within_budget(generate, audio, rate=16000, floor_seconds=3):
+    """Decode audio whose first attempt may exhaust its token budget.
+
+    generate(clip) returns (text, tokens, exhausted). An exhausted clip is
+    halved and each half decoded on its own; a short one that still cannot
+    finish yields no text and is reported as incomplete. A capture never ends
+    because the model looped on a few seconds of it.
+    """
+    text, tokens, exhausted = generate(audio)
+    if not exhausted:
+        return text, tokens, False
+    if len(audio) < 2 * floor_seconds * rate:
+        return '', 0, True
+    middle = len(audio) // 2
+    left = decode_within_budget(generate, audio[:middle], rate, floor_seconds)
+    right = decode_within_budget(generate, audio[middle:], rate, floor_seconds)
+    return ' '.join(part for part in (left[0], right[0]) if part), left[1] + right[1], left[2] or right[2]
+
+
 def read_request():
     line = sys.stdin.buffer.readline(MAX_REQUEST_BYTES + 1)
     if not line:
@@ -95,26 +114,28 @@ def main():
         def recognize(source, audio, start, end):
             nonlocal decoded_blocks
             began = time.monotonic()
-            text, generated, called = '', 0, False
+            text, generated, called, incomplete = '', 0, False, False
+            def generate(clip):
+                nonlocal decoded_blocks
+                limit = max(128, math.ceil(len(clip)/16000*16))
+                result = model.generate(np.clip(clip, -1, 1), language='Spanish', max_tokens=limit,
+                                        temperature=0.0, prefill_step_size=512, verbose=False,
+                                        **({'system_prompt': vocabulary_prompt} if vocabulary_prompt else {}))
+                decoded_blocks += 1
+                return result.text.strip(), result.generation_tokens, result.generation_tokens >= limit
             with contextlib.redirect_stdout(sys.stderr):
                 # ContextualProcessor gates on the entire core; the last 3 s
                 # preprocessing slab alone is not evidence of silence for it.
                 presence = None if contextual else presence_metrics.get(source)
                 if np.any(audio) and (presence is None or presence['has_speech'] is not False):
-                    limit = max(128, math.ceil(len(audio)/16000*16))
                     called = True
-                    result = model.generate(np.clip(audio, -1, 1), language='Spanish', max_tokens=limit,
-                                            temperature=0.0, prefill_step_size=512, verbose=False,
-                                            **({'system_prompt': vocabulary_prompt} if vocabulary_prompt else {}))
-                    decoded_blocks += 1
-                    if result.generation_tokens >= limit:
-                        raise ValueError('qwen_live_token_limit')
-                    text, generated = result.text.strip(), result.generation_tokens
+                    text, generated, incomplete = decode_within_budget(generate, audio)
                 mx.clear_cache()
             return {'text': text, 'source': source, 'start_seconds': start, 'end_seconds': end,
                     'state': ('no_speech_detected' if presence['has_speech'] is False else 'provisional_low_voice_evidence'
                               if presence['has_speech'] is None else 'provisional') if presence is not None else 'provisional',
                     'speech_presence': presence, 'model_called': called,
+                    **({'decode_incomplete': True} if incomplete else {}),
                     'model': 'Qwen3-ASR-1.7B', 'generation_tokens': generated,
                     'elapsed_seconds': time.monotonic()-began}
         while (request := read_request()) is not None:
@@ -134,10 +155,12 @@ def main():
                 from synth.worker.echo import StreamingEchoCanceller
                 from synth.worker.voice_activity import SpeechPresence, POLICY as VAD_POLICY
                 reader = SourceReader(request['folder'])
+                # The durable watermark establishes the capture UUID. Private
+                # vocabulary and voice ownership must never be checked with None.
+                progress = reader.progress()
                 from synth.worker.capture_vocabulary import load as load_vocabulary, prompt as asr_prompt, fingerprint as vocabulary_hash
                 terms = load_vocabulary(state, reader.folder, reader.capture_id)
                 vocabulary_prompt = asr_prompt(terms)
-                progress = reader.progress()
                 if incremental is not None:
                     previous = incremental.reader.progress()
                     if previous['state'] != 'closed' or incremental.position < max(previous['sources'].values()):
@@ -242,12 +265,12 @@ def main():
             with contextlib.redirect_stdout(sys.stderr):
                 audio = np.asarray(values, dtype=np.float32)
                 if np.any(audio):
-                    limit = max(128, math.ceil(len(audio)/16000*16))
-                    result = model.generate(audio, language='Spanish', max_tokens=limit,
-                                            temperature=0.0, prefill_step_size=512, verbose=False)
-                    if result.generation_tokens >= limit:
-                        raise ValueError('qwen_live_token_limit')
-                    text = result.text.strip()
+                    def generate_plain(clip):
+                        limit = max(128, math.ceil(len(clip)/16000*16))
+                        result = model.generate(clip, language='Spanish', max_tokens=limit,
+                                                temperature=0.0, prefill_step_size=512, verbose=False)
+                        return result.text.strip(), result.generation_tokens, result.generation_tokens >= limit
+                    text = decode_within_budget(generate_plain, audio)[0]
                 mx.clear_cache()
             send({'text': text, 'elapsed_seconds': time.monotonic()-started,
                   'audio_seconds': len(values)/16000, 'peak_mlx_gb': mx.get_peak_memory()/1e9})

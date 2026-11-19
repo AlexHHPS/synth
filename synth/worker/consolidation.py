@@ -96,7 +96,11 @@ class ConsolidationJournal:
         previous=self.db.execute('SELECT MAX(ready_frame) FROM events').fetchone()[0]
         if previous is not None and ready_frame<previous:raise ValueError('consolidation_publication_order_invalid')
         raw=self.db.execute('SELECT decoded FROM windows WHERE source=? AND start_frame=?',(source,start)).fetchone()
-        presence=json.loads(raw['decoded']).get('speech_presence',{}) if raw and raw['decoded'] else {}
+        decoded=json.loads(raw['decoded']) if raw and raw['decoded'] else {}
+        presence=decoded.get('speech_presence',{})
+        if decoded.get('decode_incomplete'):
+            # Part of this window had speech the model could not finish.
+            reviews=[*reviews,{'reason':'decode_incomplete','start_frame':start,'end_frame':end}]
         if words and presence.get('has_speech') is not True:
             reviews=[*reviews,{'reason':'low_voice_evidence','start_frame':start,'end_frame':end}]
         uncertain=any(w.get('evidence_state')=='needs_review' for w in words) or bool(reviews)

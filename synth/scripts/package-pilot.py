@@ -8,7 +8,6 @@ import plistlib
 import shutil
 import subprocess
 import time
-import importlib.util
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--app-source', type=Path)
@@ -42,7 +41,7 @@ for source in [ROOT / "LICENSE.md", ROOT / "synth/.toolchains/whisper-portable/L
         shutil.copy2(source, notices / ("whisper-LICENSE" if "whisper-portable" in str(source) else source.name))
 for source in [ROOT / "synth/.runtime/ffmpeg-8.0.tar.xz",
                ROOT / "synth/.runtime/ffmpeg-build.json",
-               ROOT / "synth/.runtime/ffmpeg-8.0/COPYING.LGPLv2.1"]:
+               ROOT / "synth/.runtime/COPYING.LGPLv2.1"]:
     if not source.is_file(): raise FileNotFoundError("Required FFmpeg source/build/license missing: " + source.name)
     shutil.copy2(source, notices / source.name)
 shutil.copy2(ROOT / "synth/.runtime/models/speakers-community1/LICENSE", notices / "Community1-LICENSE.txt")
@@ -64,9 +63,6 @@ subprocess.run([str(host / "synth-voice-host"), "--self-check"], check=True)
 staging = OUTPUT / "dmg-content"
 if staging.exists(): shutil.rmtree(staging)
 staging.mkdir(); subprocess.run(["cp","-cR",str(destination),str(staging / destination.name)],check=True)
-spec=importlib.util.spec_from_file_location("kit",ROOT/"synth/scripts/build-install-kit.py")
-kit=importlib.util.module_from_spec(spec);spec.loader.exec_module(kit)
-kit.render(staging,"Consulta el checksum junto al DMG en el kit completo.",inside_dmg=True)
 (staging / "Applications").symlink_to("/Applications")
 guide = ROOT / "docs/synth/installation.md"
 if guide.exists(): shutil.copy2(guide, staging / "Instrucciones.md")

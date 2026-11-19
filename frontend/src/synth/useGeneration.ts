@@ -115,8 +115,10 @@ export function useGeneration(meetingId: string, version: number | undefined, en
           }
           failures++;
           if (current) setDraft({ ...current, phase: 'reconnecting' });
-          if (failures >= 5) { setError('Se interrumpió la conexión con el acta.'); return; }
-          await wait(Math.min(500 * 2 ** failures, 4000));
+          // Say so, and keep trying: the acta is still being written on the
+          // service and this screen must show it when the connection returns.
+          if (failures >= 5) setError('Se interrumpió la conexión con el acta. Reintentando…');
+          await wait(Math.min(500 * 2 ** failures, 8000));
         }
       }
     }

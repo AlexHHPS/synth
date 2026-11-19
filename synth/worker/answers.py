@@ -1,4 +1,4 @@
-"""Answer questions to the meetings through Hermes/instant-combo.
+"""Answer questions to the meetings through the configured Hermes gateway.
 
 The model sees only the passages the API retrieved under the asker's permissions. It may cite only those turns;
 an answer without a valid citation becomes «No consta». Runs in its own thread so a long minutes job does not
@@ -55,12 +55,36 @@ def answer(question: str, passages: list[dict[str, Any]], complete: Callable) ->
     return {"status": "answered", "text": text.strip()[:2000], "citations": cited[:8]}
 
 
+def live_state(request: dict[str, Any], complete: Callable) -> dict[str, Any]:
+    """Updated provisional state for a meeting in progress; each item must cite a line that was sent."""
+    from . import semantic_state
+    sources = request["lines"]
+    previous = {"items": request["state"], "markdown": ""} if request.get("state") else None
+    response = complete(semantic_state.messages(sources, previous, notes=request.get("notes") or ""), 4096)
+    try:
+        data = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", response["content"].strip()))
+        items = data["items"]
+    except (json.JSONDecodeError, KeyError, AttributeError, TypeError):
+        raise ValueError("live_state_unreadable") from None
+    kept: list[dict[str, Any]] = []
+    for item in items if isinstance(items, list) else []:
+        # Items are judged one by one: a bad citation drops that item, not the meeting's state.
+        try:
+            semantic_state.validate({"items": kept + [item], "markdown": ""}, sources)
+        except (ValueError, TypeError, KeyError):
+            continue
+        kept.append(item)
+        if len(kept) == semantic_state.MAX_ITEMS:
+            break
+    return {"items": kept}
+
+
 def claim(db) -> dict[str, Any] | None:
     return db.execute("""UPDATE questions SET state='running', attempts=attempts+1, lease_until=now()+interval '3 minutes',
             updated_at=now()
         WHERE id=(SELECT id FROM questions WHERE (state='queued' OR (state='running' AND lease_until<now()))
                   AND attempts<%s ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED)
-        RETURNING id, question, passages, attempts""", (MAX_ATTEMPTS,)).fetchone()
+        RETURNING id, question, passages, attempts, kind""", (MAX_ATTEMPTS,)).fetchone()
 
 
 def finish(db, qid, result: dict[str, Any] | None, error: str | None = None, final: bool = True) -> None:
@@ -79,6 +103,8 @@ def purge(db) -> int:
     # A worker that died during the last attempt leaves the row running past its lease: report it instead of hanging.
     db.execute("""UPDATE questions SET state='failed', error_code='answer_abandoned', updated_at=now()
         WHERE state='running' AND lease_until < now() AND attempts >= %s""", (MAX_ATTEMPTS,))
+    # Notes taken while recording are superseded by the acta: they go within hours.
+    db.execute("DELETE FROM questions WHERE kind='live' AND created_at < now() - interval '6 hours'")
     return db.execute("DELETE FROM questions WHERE created_at < now() - interval '7 days'").rowcount
 
 
@@ -90,7 +116,8 @@ def step(connect: Callable, complete: Callable) -> bool:
     if not question:
         return False
     try:
-        result = answer(question["question"], question["passages"], complete)
+        result = (live_state(question["passages"], complete) if question.get("kind") == "live"
+                  else answer(question["question"], question["passages"], complete))
         error = None
     except Exception as failure:  # the model or gateway failed: retry up to MAX_ATTEMPTS, then report it
         result = None

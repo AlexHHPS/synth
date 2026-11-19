@@ -23,13 +23,18 @@ export function CaptureHandoff() {
         if (active && captureScope() === scope && name !== readCapture()?.title) localStorage.setItem(CAPTURE_MODE, 'legacy');
       }).catch(() => { /* Only a legacy-mode hint; native ownership remains authoritative. */ });
     }).then(fn => { if (active) { unlistenStart = fn; setCaptureHandoffReady(!!unlisten); } else fn(); }).catch(failed);
-    void listen<{ folder_path?: string; save_status?: string; capture_id?: string }>('recording-stopped', event => {
+    void listen<{ folder_path?: string; save_status?: string; capture_id?: string; source_archive_ready?: boolean }>('recording-stopped', event => {
       if (localStorage.getItem(CAPTURE_MODE) !== 'synth') return;
       const options = readCapture();
       if (!options || (options.capture_id && options.capture_id !== event.payload.capture_id)) return;
       const scope = captureScope();
-      if (event.payload.save_status !== 'saved' || !event.payload.folder_path) {
-        setStatus(RecordingStatus.ERROR, 'El audio no se ha cerrado correctamente. Revisa la captura antes de procesarla.');
+      // The per-source tracks are what gets transcribed; the mixed file is a
+      // courtesy copy. Older native builds only report the mixed file.
+      const closed = event.payload.source_archive_ready ?? event.payload.save_status === 'saved';
+      if (!closed || !event.payload.folder_path) {
+        // After the recording context has handled this same event: it moves
+        // any status outside the stop flow to "stopping" and would hide this.
+        setTimeout(() => { if (active) setStatus(RecordingStatus.ERROR, 'El audio no se ha cerrado correctamente. Revisa la captura antes de procesarla.'); }, 0);
         return;
       }
       writeCapture({ ...options, folder_path: event.payload.folder_path });

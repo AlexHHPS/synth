@@ -26,6 +26,20 @@ export function readCapture(): CaptureOptions | null {
     return value?.consent_confirmed === true && typeof value.title === 'string' ? value : null;
   } catch { return null; }
 }
+/**
+ * Stored options describe a capture only while it records or waits to be
+ * processed. Anything else is a draft left by a start that never happened,
+ * and must not name the next note.
+ */
+export function activeCapture(underway: boolean): CaptureOptions | null {
+  const stored = readCapture();
+  return stored && (stored.folder_path || underway) ? stored : null;
+}
+/** Forget a draft that never became a recording, so the next note starts clean. */
+export function clearCapture() {
+  const key = storageKey();
+  if (key) localStorage.removeItem(key);
+}
 const handingOff = new Map<string, Promise<CaptureTask>>();
 let ready = false;
 export function setCaptureHandoffReady(value: boolean) { ready = value; }

@@ -58,11 +58,24 @@ synth/.toolchains/build-venv/bin/python synth/scripts/package-pilot.py --format 
 
 Replace example origins before building. The speaker runtime and models are pinned,
 ASR weights are checked by SHA-256, and downloads include their notices. The build
-uses upstream pinned dependencies and a source-built, audio-only FFmpeg executable.
+uses upstream pinned dependencies and a source-built FFmpeg executable.
 The package includes its exact source archive, build flags and LGPL license.
 Synth invokes the executable as a separate process; it does not link FFmpeg libraries.
 Package-host requires the native build's FFmpeg sidecar, public model files,
 standalone whisper-cli, `uv`, the Silero VAD model and the Swift acoustic executable.
+Video import and screenshots use the same local host. The included FFmpeg extracts
+audio and frames from supported MP4, MOV, M4V, WebM and MKV files. macOS provides
+local text recognition for images and PDFs. Set up the optional Qwen3-VL model
+in Synth's settings for scene descriptions and frame comparisons. The model adds
+about 3.1 GB of weights and uses a separate local runtime.
+
+To browse read-only Google Drive, enable Drive API access on the Google Cloud
+project for your Supabase Google sign-in and allow the
+`https://www.googleapis.com/auth/drive.readonly` scope. Users grant that
+permission separately in the import panel. Synth keeps the short-lived Drive
+token on the Mac and binds it to the signed-in user. Local files work with
+either desktop auth mode.
+
 The live Qwen speech runtime is not bundled: first-run setup installs its pinned,
 hash-locked packages and weights into the app data folder. It never reads another
 app's installed model directory, session or library.

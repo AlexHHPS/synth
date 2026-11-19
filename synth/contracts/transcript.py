@@ -96,6 +96,35 @@ class ASREvidence(BaseModel):
     reviews: list[ASRReview] = Field(default_factory=list, max_length=1024)
 
 
+class VisualDescription(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    model: str = Field(min_length=1, max_length=100)
+    scene: str = Field(min_length=1, max_length=320)
+    change: str = Field(default="", max_length=320)
+    compared_to_ms: int | None = Field(default=None, ge=0)
+    speech_reference_ms: int | None = Field(default=None, ge=0)
+
+
+class MediaObservation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["screenshot", "video_frame", "attachment"]
+    at_ms: int | None = Field(default=None, ge=0)
+    label: str = Field(min_length=1, max_length=200)
+    text: str = Field(max_length=1500)
+    status: Literal["read", "no_text", "unreadable"] = "read"
+
+    visual: VisualDescription | None = None
+    visual_unavailable: bool | None = None
+
+    @model_serializer(mode="wrap")
+    def omit_absent_visual_fields(self, handler):
+        data = handler(self)
+        for key in ("visual", "visual_unavailable"):
+            if data[key] is None:
+                data.pop(key)
+        return data
+
+
 class Transcript(BaseModel):
     model_config = ConfigDict(extra="forbid")
     language: str = Field(default="es", pattern="^es$")
@@ -107,6 +136,8 @@ class Transcript(BaseModel):
     corrections: list[Correction] | None = Field(default=None, max_length=5_000)
     raw_version: int | None = Field(default=None, ge=1)
     asr_evidence: list[ASREvidence] | None = Field(default=None, max_length=20_000)
+
+    media_observations: list[MediaObservation] | None = Field(default=None, max_length=22)
 
     @model_validator(mode="after")
     def ordered_unique_segments(self):
@@ -151,7 +182,7 @@ class Transcript(BaseModel):
     def omit_absent_turns(self, handler):  # slop-ok: pydantic validator, called by the model
         # Transcripts without turns serialize exactly as before (same content hash).
         data = handler(self)
-        for optional in ("turns", "speakers", "corrections", "raw_version", "asr_evidence"):
+        for optional in ("turns", "speakers", "corrections", "raw_version", "asr_evidence", "media_observations"):
             if data.get(optional) is None:
                 data.pop(optional, None)
         return data

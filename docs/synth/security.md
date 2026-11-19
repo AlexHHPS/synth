@@ -39,8 +39,13 @@ Voice matching is provisional and must abstain on insufficient evidence. Never
 use it as login, authorization, proof of attendance or a calibrated identity claim.
 
 Audio stays on the Mac and is removed after analysis, including enrollment
-failures. The active host expires interrupted recordings within 24 hours. Text is
-sent to the configured LLM provider, which may be external. Audit its retention
+failures. The active host expires interrupted recordings after seven days. Video, screenshots
+and attachments are processed locally. The text and visual observations generated
+from them may accompany the transcript to the configured document service. With
+live agreements and tasks enabled, the service processes excerpts during capture.
+Those provisional results expire after six hours and are separate from the final
+minutes. The configured LLM provider receives the text and may be external.
+Audit its retention
 and provider routing separately. The inherited product's telemetry and updater
 are disabled; this distribution has no vendor telemetry key or update endpoint.
 

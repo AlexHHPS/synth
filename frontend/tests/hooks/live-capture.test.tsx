@@ -108,3 +108,18 @@ test('a waiting notice received while history loads is retained for its capture'
   await act(async () => {current.clear();});
   expect(current.waiting).toBe(false);
 });
+
+test('a live failure is visible only for its own capture and keeps already saved text', async () => {
+  history = async () => [{ ...update(), display_time: '10:00:00' }];
+  transcriptionState = 'waiting';
+  await act(async () => { renderer = create(<Harness/>); });
+  await act(async () => { emit('transcription-error', {capture_id:'capture-b', userMessage:'Otra reunión'}); });
+  expect(current.error).toBe('');
+  expect(current.waiting).toBe(true);
+  await act(async () => { emit('transcription-error', {capture_id:'capture-a', userMessage:'El audio sigue guardado; se interrumpió el texto.'}); });
+  expect(current.error).toContain('se interrumpió el texto');
+  expect(current.waiting).toBe(false);
+  expect(current.transcripts.map(row => row.text)).toEqual(['Texto provisional']);
+  await act(async () => { current.clear(); });
+  expect(current.error).toBe('');
+});

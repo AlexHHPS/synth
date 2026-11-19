@@ -4,6 +4,9 @@ Only public/publishable Auth keys are needed. Folder authorization remains in
 Synth. Fail closed on an unavailable Auth service or invalid domain policy.
 """
 from datetime import datetime, timezone
+import hashlib
+import threading
+import time
 import json
 import base64
 import os
@@ -58,10 +61,51 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+# Supabase Auth answers who a token belongs to. Asking it on every request cost
+# ~200 ms each and, while an acta streams, several questions a second. The
+# answer is remembered briefly; with SUPABASE_CHECK_SESSIONS=1 a sign-out is
+# still effective at once, because that check reads the session row every time.
+VERDICT_SECONDS = 60
+REFUSAL_SECONDS = 20
+_verdicts = {}
+_verdicts_lock = threading.Lock()
+
+
+def forget_verdicts():
+    with _verdicts_lock:
+        _verdicts.clear()
+
+
 def verified_user(token):
-    url, key = configuration()
     if not isinstance(token, str) or not 1 <= len(token) <= 16384 or any(ord(c) < 33 or ord(c) > 126 for c in token):
         raise HTTPException(401, "La sesión no es válida.")
+    key = hashlib.sha256(token.encode()).digest()
+    now = time.monotonic()
+    with _verdicts_lock:
+        known = _verdicts.get(key)
+    if known and known[0] > now:
+        if isinstance(known[1], HTTPException):
+            raise HTTPException(known[1].status_code, known[1].detail)
+        return dict(known[1])
+    try:
+        verdict, lifetime = ask_supabase(token), VERDICT_SECONDS
+    except HTTPException as refused:
+        # Only "this token is not valid" is remembered; an outage is not.
+        if refused.status_code != 401:
+            raise
+        verdict, lifetime = refused, REFUSAL_SECONDS
+    with _verdicts_lock:
+        if len(_verdicts) >= 4096:
+            for stale in [k for k, v in _verdicts.items() if v[0] <= now] or list(_verdicts)[:1024]:
+                _verdicts.pop(stale, None)
+        _verdicts[key] = (now + lifetime, verdict)
+    if isinstance(verdict, HTTPException):
+        raise verdict
+    return dict(verdict)
+
+
+def ask_supabase(token):
+    url, key = configuration()
     request = urllib.request.Request(url + "/auth/v1/user", headers={"apikey": key, "Authorization": "Bearer " + token})
     opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({}), NoRedirect(),

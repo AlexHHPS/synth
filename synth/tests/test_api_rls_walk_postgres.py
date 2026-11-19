@@ -169,7 +169,7 @@ class Walk:
             claimed = queue.claim(db, main.WORKER, 300)
         model = FakeModel([GOOD_TOPIC_1, GOOD_TOPIC_2])
         with patch.object(main, "connect", self.test.connector(self.schema)), \
-                patch.object(main, "completion", side_effect=lambda messages, max_tokens: model(messages, max_tokens)):
+                patch.object(main, "completion", side_effect=lambda messages, max_tokens, on_delta=None: model(messages, max_tokens)):
             main.run(claimed)
 
     # -- the walk ---------------------------------------------------------------------------------------------------
@@ -228,7 +228,7 @@ class Walk:
         c("same capture again", "alice", "POST", "/v1/meetings", 201, meeting)
         c("same key, other data", "alice", "POST", "/v1/meetings", 409, {**meeting, "title": "Otro"})
         private = c("alice creates private meeting", "alice", "POST", "/v1/meetings", 201, {"title": "Uno a uno"})["id"]
-        moved = c("alice creates a meeting to move", "alice", "POST", "/v1/meetings", 201, {"title": "Ventas"})["id"]
+        moved = self.moved_meeting = c("alice creates a meeting to move", "alice", "POST", "/v1/meetings", 201, {"title": "Ventas"})["id"]
         c("alice moves it into Clientes", "alice", "PUT", "/v1/meetings/{m}/folder", 200, {"folder_id": shared}, m=moved)
         c("bob cannot move it", "bob", "PUT", "/v1/meetings/{m}/folder", 404, {"folder_id": None}, m=moved)
         self.bob_meeting = c("bob creates a meeting in Equipo", "bob", "POST", "/v1/meetings", 201,
@@ -273,6 +273,14 @@ class Walk:
         for who in ("alice", "bob", "carol"):
             c(f"{who} library", who, "GET", "/v1/library", 200)
             c(f"{who} searches", who, "GET", "/v1/search?q=piloto", 200)
+        first = c("most recent meeting", "alice", "GET", "/v1/library?newest=true&limit=1&folder_id={folder}", 200, folder=shared)
+        self.test.assertEqual([item["id"] for item in first["items"]], [self.moved_meeting])
+        second = c("next meeting by creation date", "alice", "GET",
+                   "/v1/library?newest=true&limit=1&folder_id={folder}&after={cursor}", 200,
+                   folder=shared, cursor=first["next_cursor"])
+        self.test.assertEqual([item["id"] for item in second["items"]], [shared_m])
+        c("reader cannot page from a hidden meeting", "bob", "GET",
+          "/v1/library?newest=true&after={cursor}", 404, cursor=private)
         c("bob library of Clientes", "bob", "GET", "/v1/library?folder_id={f}", 200, f=shared)
         c("carol library of Clientes", "carol", "GET", "/v1/library?folder_id={f}", 404, f=shared)
         return job

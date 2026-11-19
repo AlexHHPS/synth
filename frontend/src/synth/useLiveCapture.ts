@@ -87,6 +87,11 @@ export function useLiveCapture() {
         if (state.capture_id === capture.current) setWaiting(state.state === 'waiting');
         else if (capture.current === null) pendingState = state;
       });
+      await register<{capture_id?:string;userMessage?:string}>('transcription-error', failure => {
+        if (!failure.capture_id || failure.capture_id !== capture.current) return;
+        setWaiting(false);
+        setError(failure.userMessage || 'Se interrumpió la transcripción en directo. El audio sigue guardándose.');
+      });
       if (disposed) return;
       await register('recording-started', () => { setTranscripts([]); void recover(); });
       if (!disposed) await recover();

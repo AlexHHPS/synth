@@ -11,24 +11,20 @@
 .calendar-date { display: flex; gap: var(--space-3); align-items: flex-start; padding-top: var(--space-2); font-size: var(--text-sm); }
 .calendar-date > strong { font-size: var(--text-2xl); font-weight: 500; line-height: 1; font-variant-numeric: tabular-nums; }
 .calendar-date > div { display: flex; flex-direction: column; }
-.calendar-date small, .calendar-event small, .calendar-history-row small, .calendar-history-row time, .calendar-guests small, .calendar-connection small { color: var(--color-text-secondary); }
+.calendar-date small, .calendar-event small, .calendar-guests small, .calendar-connection small { color: var(--color-text-secondary); }
 .calendar-today { color: var(--color-accent-brand); }
 .calendar-event { width: 100%; display: flex; gap: var(--space-3); align-items: center; text-align: left; padding: var(--space-2) var(--space-3); border-radius: var(--radius-sm); min-height: var(--space-12); }
-.calendar-event:hover, .calendar-history-row:hover { background: var(--color-surface-sunken); }
-.calendar-event:focus-visible, .calendar-history-row:focus-visible, .calendar-context-source button:focus-visible { outline: 2px solid var(--color-border-focus); outline-offset: 2px; }
+.calendar-event:hover { background: var(--color-surface-sunken); }
+.calendar-event:focus-visible, .calendar-context-source button:focus-visible { outline: 2px solid var(--color-border-focus); outline-offset: 2px; }
 .calendar-event-bar { height: var(--space-8); width: calc(var(--space-1) / 2); border-radius: var(--radius-sm); background: var(--color-border-default); flex-shrink: 0; }
 .calendar-event[aria-expanded=true] .calendar-event-bar, .calendar-event:focus-visible .calendar-event-bar { background: var(--color-accent-brand); }
 .calendar-event > svg { color: var(--color-text-secondary); opacity: 0; flex-shrink: 0; }
 .calendar-event:hover > svg, .calendar-event:focus-visible > svg { opacity: 1; }
-.calendar-event small, .calendar-history-row small { font-size: var(--text-sm); }
-.calendar-event > span:nth-child(2), .calendar-history-row > span:nth-child(2) { display: flex; flex-direction: column; gap: 0; flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.calendar-event strong, .calendar-history-row strong { font-size: var(--text-base); font-weight: 500; }
+.calendar-event small { font-size: var(--text-sm); }
+.calendar-event > span:nth-child(2) { display: flex; flex-direction: column; gap: 0; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.calendar-event strong { font-size: var(--text-base); font-weight: 500; }
 .calendar-no-events { color: var(--color-text-secondary); padding: var(--space-3); }
-.calendar-history { margin-top: var(--space-8); display: grid; gap: var(--space-6); }
-.calendar-history h2 { font-size: var(--text-sm); font-weight: 500; color: var(--color-text-secondary); margin-bottom: var(--space-3); }
-.calendar-history-row { display: flex; align-items: center; width: 100%; gap: var(--space-3); padding: var(--space-2); min-height: var(--space-12); text-align: left; border-radius: var(--radius-sm); }
-.calendar-history-icon { display: grid; place-items: center; width: var(--space-8); height: var(--space-8); background: var(--color-surface-sunken); border-radius: var(--radius-md); flex-shrink: 0; color: var(--color-text-secondary); }
-.calendar-history-row time { font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.calendar-history { margin-top: var(--space-8); }
 .calendar-connect-prompt, .calendar-connection { display: flex; gap: var(--space-5); align-items: center; padding: var(--space-6); border: 1px solid var(--color-border-default); border-radius: var(--radius-lg); background: var(--color-surface-elevated); }
 .calendar-connect-prompt > div, .calendar-connection > div:first-of-type { flex: 1; min-width: 0; }
 .calendar-connect-prompt h2, .calendar-connection h2 { font-size: var(--text-lg); font-weight: 500; margin-bottom: var(--space-2); }
@@ -56,7 +52,6 @@
   .calendar-section-head { flex-wrap: wrap; }
   .calendar-section-head h1 { font-size: var(--text-2xl); }
   .calendar-connect-prompt, .calendar-connection { flex-wrap: wrap; }
-  .calendar-history-row { padding-inline: 0; gap: var(--space-3); }
 }
 
 .calendar-capture-context { margin-top: var(--space-4); font-size: var(--text-sm); color: var(--color-text-secondary); }

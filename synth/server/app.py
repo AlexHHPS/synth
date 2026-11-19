@@ -11,6 +11,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from psycopg.types.json import Jsonb
+import datetime
 import json
 from .db import digest
 from synth.contracts.transcript import Transcript
@@ -19,7 +20,7 @@ from synth.worker.queue import submit, cancel
 from .db import audit, authenticate, authorize_folder, authorize_meeting, bind_actor, connect, digest, migrate
 from .supabase_auth import auth_mode, allowed_domains, configuration, verified_user, verify_live_session
 from .voice_registry import Enrollment, seal, unseal
-from . import follow_up, glossary, items, minutes_view, questions, speakers, generation_view, meeting_context, voice_learning, google_calendar
+from . import document_scope, live_notes, throttle, follow_up, glossary, items, minutes_view, questions, speakers, generation_view, meeting_context, voice_learning, google_calendar
 
 
 @asynccontextmanager
@@ -51,10 +52,16 @@ async def protect_local_mcp(request: Request, call_next):
         origin = request.headers.get("origin")
         if origin and origin not in ("http://127.0.0.1:18280", "http://localhost:18280", "tauri://localhost", "http://tauri.localhost"):
             return Response(status_code=403)
+    address = throttle.client(request)
+    if throttle.blocked(address):
+        return JSONResponse({"detail": "Demasiados intentos con credenciales no válidas. Espera un minuto."},
+                            status_code=429, headers={"Retry-After": "60"})
     response = await call_next(request)
     if request.url.path.startswith("/v1/") or request.url.path == "/mcp":
         response.headers["Cache-Control"] = "no-store"
-        if response.status_code == 401: response.headers["WWW-Authenticate"] = "Bearer"
+        if response.status_code == 401:
+            response.headers["WWW-Authenticate"] = "Bearer"
+            throttle.refused(address)
     return response
 
 
@@ -103,6 +110,8 @@ class Meeting(BaseModel):
     folder_id: UUID | None = None
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=200)
     calendar_event_id: UUID | None = None
+    # When the conversation happened; spoken dates are resolved against it.
+    captured_at: datetime.datetime | None = None
 
 
 class Notes(BaseModel):
@@ -114,9 +123,15 @@ class Assignment(BaseModel):
     folder_id: UUID | None = None
 
 
+class UploadedSpeakers(BaseModel):
+    """Names the owner confirmed while recording, applied to the upload itself."""
+    actions: list[dict] = Field(min_length=1, max_length=50)
+
+
 class TranscriptUpload(BaseModel):
     transcript: Transcript
     idempotency_key: str = Field(min_length=1, max_length=200)
+    speaker_batch: UploadedSpeakers | None = None
 
 
 class RPC(BaseModel):
@@ -433,8 +448,15 @@ def create_meeting(body: Meeting, context: Session):
     event = db.execute('''SELECT id FROM calendar_events WHERE id=%s AND owner_id=%s AND active
         AND folder_id IS NOT DISTINCT FROM %s FOR KEY SHARE''',
         (body.calendar_event_id, actor['id'], body.folder_id)).fetchone() if body.calendar_event_id else None
-    db.execute("INSERT INTO meetings(id,owner_id,folder_id,title,state,calendar_event_id) VALUES (%s,%s,%s,%s,'capturing',%s)",
-        (mid, actor["id"], body.folder_id, body.title, event['id'] if event else None))
+    captured = body.captured_at
+    if captured is not None:
+        captured = captured if captured.tzinfo else captured.replace(tzinfo=datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        # A clock that is wrong by years would date every task wrongly.
+        if not now - datetime.timedelta(days=30) <= captured <= now + datetime.timedelta(minutes=10):
+            captured = None
+    db.execute("INSERT INTO meetings(id,owner_id,folder_id,title,state,calendar_event_id,captured_at) VALUES (%s,%s,%s,%s,'capturing',%s,%s)",
+        (mid, actor["id"], body.folder_id, body.title, event['id'] if event else None, captured))
     if body.idempotency_key is not None:
         db.execute("INSERT INTO meeting_creation_receipts(owner_id,idempotency_key,request_hash,meeting_id) VALUES (%s,%s,%s,%s)",
                    (actor["id"], body.idempotency_key, request_hash, mid))
@@ -487,12 +509,27 @@ def assign_folder(meeting_id: UUID, body: Assignment, context: Session):
 
 
 @app.get("/v1/library")
-def library(context: Session, after: UUID | None = None, limit: int = 25, folder_id: UUID | None = None):
+def library(context: Session, after: UUID | None = None, limit: int = 25, folder_id: UUID | None = None, newest: bool = False):
     db, actor = context
     limit = min(max(limit, 1), 100)
     if folder_id: authorize_folder(db, actor, folder_id)
     # Keyset cursor is a UUID; inaccessible metadata is discarded before content reads.
-    rows = db.execute("SELECT id FROM meetings WHERE (%s::uuid IS NULL OR id>%s) AND (%s::uuid IS NULL OR folder_id=%s) ORDER BY id", (after, after, folder_id, folder_id)).fetchall()
+    if newest:
+        if after:
+            authorize_meeting(db, actor, after)
+        rows = db.execute("""
+            SELECT id FROM meetings
+            WHERE (%s::uuid IS NULL OR (created_at, id) <
+                (SELECT created_at, id FROM meetings WHERE id = %s))
+              AND (%s::uuid IS NULL OR folder_id = %s)
+            ORDER BY created_at DESC, id DESC
+        """, (after, after, folder_id, folder_id)).fetchall()
+    else:
+        rows = db.execute("""
+            SELECT id FROM meetings
+            WHERE (%s::uuid IS NULL OR id > %s) AND (%s::uuid IS NULL OR folder_id = %s)
+            ORDER BY id
+        """, (after, after, folder_id, folder_id)).fetchall()
     result = []
     for row in rows:
         try:
@@ -544,7 +581,14 @@ def upload_transcript(meeting_id: UUID, body: TranscriptUpload, context: Session
         raise HTTPException(422, "Los nombres de los hablantes solo se confirman desde la reunión.")
     if body.transcript.corrections or body.transcript.raw_version:
         raise HTTPException(422, "Las correcciones del glosario las crea el servicio, no una subida.")
-    return store_transcript_version(db, actor, meeting_id, body.transcript, body.idempotency_key, "transcript.upload")
+    stored = store_transcript_version(db, actor, meeting_id, body.transcript, body.idempotency_key, "transcript.upload")
+    if body.speaker_batch is None:
+        return stored
+    # The heard transcript stays as its own version; the names become the next
+    # one in the same transaction, so only one acta is ever generated for them.
+    named = speakers.confirm_uploaded(db, actor, meeting_id, body.transcript, body.speaker_batch.actions,
+                                      stored["transcript_version"], body.idempotency_key, store_transcript_version)
+    return {**named, "speakers_applied": True}
 
 
 def store_transcript_version(db, actor, meeting_id, transcript, idempotency_key, action):
@@ -577,6 +621,7 @@ items.register(app, Session)
 minutes_view.register(app, Session)
 glossary.register(app, Session, store_transcript_version)
 questions.register(app, Session)
+live_notes.register(app, Session)
 voice_learning.register(app, Session)
 google_calendar.register(app, Session)
 follow_up.register(app, Session)
@@ -658,7 +703,7 @@ def document(meeting_id: UUID, context: Session, version: int | None = None):
          OR version=%s) ORDER BY version DESC LIMIT 1""", (meeting_id, version, meeting_id, version)).fetchone()
     if not row:
         raise HTTPException(404, "Todavía no hay un acta para la transcripción actual.")
-    return row
+    return document_scope.for_readers(db, meeting_id, row)
 
 
 @app.get("/v1/search")

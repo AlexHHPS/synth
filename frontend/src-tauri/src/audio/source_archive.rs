@@ -3,26 +3,51 @@ use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}, mpsc::{sync_channel, SyncSender}};
+use std::sync::{Arc, atomic::{AtomicBool, AtomicU64, Ordering}, mpsc::{sync_channel, RecvTimeoutError, SyncSender, TrySendError}};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use super::recording_state::{AudioChunk, DeviceType};
 
+/// About a minute of 10 ms callbacks: a slow disk delays the watermark, it
+/// does not end the capture.
+const QUEUE_CHUNKS: usize = 6000;
+/// Durable watermark cadence. Time based, so a quiet source still advances.
+const FLUSH_EVERY: Duration = Duration::from_secs(1);
+/// A gap this long is a pause or a lost device: written as silence at once.
+const GAP_FRAMES: u64 = 9600;
+/// Shorter gaps are callback jitter unless they persist for this long.
+const JITTER_FRAMES: u64 = 2400;
+const JITTER_WINDOW_SECONDS: f64 = 2.0;
+
 #[derive(Clone)]
 pub struct SourceTap {
     sender: SyncSender<AudioChunk>,
     failed: Arc<AtomicBool>,
+    dropped: Arc<AtomicU64>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum Push { Stored, Dropped }
+
 impl SourceTap {
-    pub fn push(&self, chunk: &AudioChunk) -> Result<()> {
+    /// A full queue drops this chunk and counts it; the writer turns the hole
+    /// into explicit silence. Only a dead writer is an error.
+    pub fn push(&self, chunk: &AudioChunk) -> Result<Push> {
         if self.failed.load(Ordering::SeqCst) { return Err(anyhow!("source_archive_failed")); }
-        self.sender.try_send(chunk.clone()).map_err(|_| {
-            self.failed.store(true, Ordering::SeqCst);
-            anyhow!("source_archive_queue_failed")
-        })
+        match self.sender.try_send(chunk.clone()) {
+            Ok(()) => Ok(Push::Stored),
+            Err(TrySendError::Full(_)) => {
+                self.dropped.fetch_add(1, Ordering::SeqCst);
+                Ok(Push::Dropped)
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                self.failed.store(true, Ordering::SeqCst);
+                Err(anyhow!("source_archive_failed"))
+            }
+        }
     }
 }
 
@@ -32,6 +57,8 @@ struct Track {
     frames: u64,
     chunks: u64,
     silence_frames: u64,
+    lag_floor: u64,
+    lag_since: f64,
 }
 
 fn private_file(path: &Path) -> Result<File> {
@@ -61,7 +88,7 @@ fn publish_progress(directory: &Path, capture_id: uuid::Uuid, state: &str,
 impl Track {
     fn new(path: PathBuf) -> Result<Self> {
         let file = private_file(&path)?;
-        let mut track = Self { file, path, frames: 0, chunks: 0, silence_frames: 0 };
+        let mut track = Self { file, path, frames: 0, chunks: 0, silence_frames: 0, lag_floor: u64::MAX, lag_since: 0.0 };
         track.flush()?;
         Ok(track)
     }
@@ -94,20 +121,22 @@ impl Track {
         let prospective_frames = start.max(self.frames).checked_add(chunk.data.len() as u64)
             .ok_or_else(|| anyhow!("source_size_overflow"))?;
         if prospective_frames > (u32::MAX as u64 - 36) / 2 { return Err(anyhow!("source_size_overflow")); }
-        // Callback timing can jitter by one buffer. Preserve every sample; gaps
-        // greater than 50ms (startup, pause, disconnect) get explicit silence.
-        if start > self.frames + 2400 {
-            let gap = start - self.frames;
-            if gap > 48000 * 86400 { return Err(anyhow!("source_timeline_invalid")); }
-            let zeroes = [0u8; 8192];
-            let mut remaining = gap * 2;
-            while remaining > 0 {
-                let length = remaining.min(zeroes.len() as u64) as usize;
-                self.file.write_all(&zeroes[..length])?;
-                remaining -= length as u64;
+        // The track is a sample count, not a wall clock: a late callback
+        // delivers its buffered samples in a burst and the count catches up by
+        // itself. Silence is written only for audio that never arrived: a long
+        // gap at once, a short one when it has persisted for a whole window.
+        let lag = start.saturating_sub(self.frames);
+        if lag > GAP_FRAMES {
+            self.silence(lag)?;
+            self.lag_floor = u64::MAX;
+            self.lag_since = chunk.timestamp;
+        } else {
+            self.lag_floor = self.lag_floor.min(lag);
+            if chunk.timestamp - self.lag_since >= JITTER_WINDOW_SECONDS {
+                if self.lag_floor > JITTER_FRAMES { self.silence(self.lag_floor)?; }
+                self.lag_floor = u64::MAX;
+                self.lag_since = chunk.timestamp;
             }
-            self.frames += gap;
-            self.silence_frames += gap;
         }
         let mut bytes = Vec::with_capacity(chunk.data.len() * 2);
         for sample in &chunk.data {
@@ -118,6 +147,30 @@ impl Track {
         self.frames += chunk.data.len() as u64;
         self.chunks += 1;
         Ok(())
+    }
+
+    fn silence(&mut self, gap: u64) -> Result<()> {
+        if gap > 48000 * 86400 { return Err(anyhow!("source_timeline_invalid")); }
+        let zeroes = [0u8; 8192];
+        let mut remaining = gap * 2;
+        while remaining > 0 {
+            let length = remaining.min(zeroes.len() as u64) as usize;
+            self.file.write_all(&zeroes[..length])?;
+            remaining -= length as u64;
+        }
+        self.frames += gap;
+        self.silence_frames += gap;
+        Ok(())
+    }
+
+    /// A track left open by a crash: every whole sample on disk is audio.
+    fn reopen(path: PathBuf) -> Result<Self> {
+        let file = OpenOptions::new().read(true).write(true).open(&path)?;
+        let length = file.metadata()?.len();
+        if length < 44 { return Err(anyhow!("source_track_empty")); }
+        let frames = (length - 44) / 2;
+        file.set_len(44 + frames * 2)?;
+        Ok(Self { file, path, frames, chunks: 0, silence_frames: 0, lag_floor: u64::MAX, lag_since: 0.0 })
     }
 
     fn close(mut self) -> Result<Value> {
@@ -140,6 +193,52 @@ impl Track {
 }
 
 pub struct SourceArchive { thread: JoinHandle<Result<Value>> }
+
+fn publish_manifest(directory: &Path, capture_id: uuid::Uuid, sources: BTreeMap<&str, Value>,
+                    dropped_chunks: u64, recovered: bool) -> Result<Value> {
+    let mut manifest = json!({"version":1,"capture_id":capture_id,"state":"closed",
+        "clock":"recording_elapsed","sample_format":"pcm16","sources":sources,
+        "source_signal":"mono_resampled_pre_live_processing"});
+    // Only present when true: older readers keep seeing the manifest they know.
+    if dropped_chunks > 0 { manifest["dropped_chunks"] = json!(dropped_chunks); }
+    if recovered { manifest["recovered"] = json!(true); }
+    let temporary = directory.join("capture.json.part");
+    let _ = std::fs::remove_file(&temporary);
+    let mut file = private_file(&temporary)?;
+    file.write_all(serde_json::to_vec_pretty(&manifest)?.as_slice())?;
+    file.sync_all()?;
+    std::fs::rename(temporary, directory.join("capture.json"))?;
+    File::open(directory)?.sync_all()?;
+    Ok(manifest)
+}
+
+/// Seal a capture whose app died while recording, so it can still be
+/// transcribed. Returns None when the folder holds nothing to recover.
+pub fn recover(folder: &Path) -> Result<Option<Value>> {
+    let directory = folder.join("sources");
+    if directory.join("capture.json").exists() { return Ok(None); }
+    let Ok(bytes) = std::fs::read(directory.join("progress.json")) else { return Ok(None) };
+    let progress: Value = serde_json::from_slice(&bytes)?;
+    if progress["state"] == "closed" { return Ok(None); }
+    let capture_id = uuid::Uuid::parse_str(progress["capture_id"].as_str()
+        .ok_or_else(|| anyhow!("source_progress_invalid"))?)?;
+    let _ = std::fs::remove_file(directory.join("progress.json.part"));
+    let mut sources = BTreeMap::new();
+    for key in ["microphone", "system"] {
+        let path = directory.join(format!("{key}.wav.part"));
+        if !path.exists() { continue; }
+        match Track::reopen(path).and_then(Track::close) {
+            Ok(track) => { sources.insert(key, track); }
+            // A source that never delivered audio is absent, not a failure.
+            Err(error) if error.to_string() == "source_track_empty" => {}
+            Err(error) => return Err(error),
+        }
+    }
+    if sources.is_empty() { return Ok(None); }
+    publish_progress(&directory, capture_id, "closed", sources.iter()
+        .map(|(key, value)| (*key, value["frames"].as_u64().unwrap())).collect())?;
+    publish_manifest(&directory, capture_id, sources, 0, true).map(Some)
+}
 
 pub fn mark_failed(folder:&Path) -> Result<()> {
     let directory=folder.join("sources");
@@ -168,46 +267,47 @@ impl SourceArchive {
         if tracks.is_empty() { return Err(anyhow!("source_devices_missing")); }
         let capture_id = uuid::Uuid::new_v4();
         publish_progress(&directory, capture_id, "open", tracks.iter().map(|(key, track)| (*key, track.frames)).collect())?;
-        let (sender, receiver) = sync_channel::<AudioChunk>(128);
+        let (sender, receiver) = sync_channel::<AudioChunk>(QUEUE_CHUNKS);
         let failed = Arc::new(AtomicBool::new(false));
+        let dropped = Arc::new(AtomicU64::new(0));
         let worker_failed = failed.clone();
+        let worker_dropped = dropped.clone();
         let thread = std::thread::spawn(move || -> Result<Value> {
             let result = (|| {
-                let mut pending = 0;
-                while let Ok(chunk) = receiver.recv() {
-                    let key = match chunk.device_type { DeviceType::Microphone => "microphone", DeviceType::System => "system" };
-                    tracks.get_mut(key).ok_or_else(|| anyhow!("source_device_unexpected"))?.append(&chunk)?;
-                    pending += 1;
-                    if pending >= 50 {
+                let mut pending = false;
+                let mut flushed = Instant::now();
+                loop {
+                    match receiver.recv_timeout(Duration::from_millis(250)) {
+                        Ok(chunk) => {
+                            let key = match chunk.device_type { DeviceType::Microphone => "microphone", DeviceType::System => "system" };
+                            tracks.get_mut(key).ok_or_else(|| anyhow!("source_device_unexpected"))?.append(&chunk)?;
+                            pending = true;
+                        }
+                        Err(RecvTimeoutError::Timeout) => {}
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    }
+                    if pending && flushed.elapsed() >= FLUSH_EVERY {
                         // Publish only after every advertised prefix is durable.
                         // The reader follows this watermark, never WAV EOF or a
                         // header being rewritten by the capture thread.
                         for track in tracks.values_mut() { track.flush()?; }
                         publish_progress(&directory, capture_id, "open",
                             tracks.iter().map(|(key, track)| (*key, track.frames)).collect())?;
-                        pending = 0;
+                        pending = false;
+                        flushed = Instant::now();
                     }
                 }
-                if worker_failed.load(Ordering::SeqCst) { return Err(anyhow!("source_archive_data_loss")); }
                 let mut sources = BTreeMap::new();
                 for (key, track) in tracks { sources.insert(key, track.close()?); }
                 publish_progress(&directory, capture_id, "closed", sources.iter()
                     .map(|(key, value)| (*key, value["frames"].as_u64().unwrap())).collect())?;
-                let manifest = json!({"version":1,"capture_id":capture_id,"state":"closed",
-                    "clock":"recording_elapsed","sample_format":"pcm16","sources":sources,
-                    "source_signal":"mono_resampled_pre_live_processing"});
-                let temporary = directory.join("capture.json.part");
-                let mut file = private_file(&temporary)?;
-                file.write_all(serde_json::to_vec_pretty(&manifest)?.as_slice())?;
-                file.sync_all()?;
-                std::fs::rename(temporary, directory.join("capture.json"))?;
-                File::open(&directory)?.sync_all()?;
-                Ok(manifest)
+                publish_manifest(&directory, capture_id, sources,
+                    worker_dropped.load(Ordering::SeqCst), false)
             })();
             if result.is_err() { worker_failed.store(true, Ordering::SeqCst); }
             result
         });
-        Ok((SourceTap { sender, failed }, Self { thread }))
+        Ok((SourceTap { sender, failed, dropped }, Self { thread }))
     }
 
     pub fn close(self) -> Result<Value> {
@@ -227,7 +327,7 @@ mod tests {
                 timestamp:(index+1) as f64/100.0, chunk_id:index, device_type:DeviceType::Microphone }).unwrap();
         }
         let path = root.path().join("sources/progress.json");
-        let deadline = std::time::Instant::now()+std::time::Duration::from_secs(2);
+        let deadline = std::time::Instant::now()+std::time::Duration::from_secs(5);
         let committed = loop {
             let progress: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
             if progress["sources"]["microphone"] == 24000 { break progress; }
@@ -282,15 +382,69 @@ mod tests {
         assert!(archive.close().is_err());
         assert!(!root.path().join("sources/capture.json").exists());
     }
+    fn chunk(samples: usize, timestamp: f64) -> AudioChunk {
+        AudioChunk { data:vec![0.1;samples],sample_rate:48000,timestamp,chunk_id:0,device_type:DeviceType::Microphone }
+    }
     #[test]
-    fn bounded_queue_failure_is_sticky_instead_of_dropping_audio_silently() {
-        let (sender, _receiver) = sync_channel(1);
-        let tap = SourceTap { sender, failed:Arc::new(AtomicBool::new(false)) };
-        let chunk = AudioChunk { data:vec![0.1;480],sample_rate:48000,timestamp:0.01,chunk_id:0,device_type:DeviceType::Microphone };
-        tap.push(&chunk).unwrap();
-        assert!(tap.push(&chunk).is_err());
-        assert!(tap.failed.load(Ordering::SeqCst));
-        assert!(tap.push(&chunk).is_err());
+    fn a_full_queue_drops_and_counts_without_ending_the_capture() {
+        let (sender, receiver) = sync_channel(1);
+        let tap = SourceTap { sender, failed:Arc::new(AtomicBool::new(false)), dropped:Arc::new(AtomicU64::new(0)) };
+        assert_eq!(tap.push(&chunk(480,0.01)).unwrap(), Push::Stored);
+        assert_eq!(tap.push(&chunk(480,0.02)).unwrap(), Push::Dropped);
+        assert_eq!(tap.dropped.load(Ordering::SeqCst), 1);
+        receiver.recv().unwrap();
+        assert_eq!(tap.push(&chunk(480,0.03)).unwrap(), Push::Stored);
+        drop(receiver);
+        assert!(tap.push(&chunk(480,0.04)).is_err());
+    }
+    #[test]
+    fn a_late_callback_burst_does_not_make_the_track_longer_than_the_audio() {
+        let root = tempfile::tempdir().unwrap();
+        let (tap, archive) = SourceArchive::start(root.path(), true, false).unwrap();
+        // 100 ms of audio per chunk; the third callback is 150 ms late and the
+        // next ones arrive in a burst until the device has caught up.
+        for timestamp in [0.1, 0.2, 0.45, 0.46, 0.5, 0.6] { tap.push(&chunk(4800, timestamp)).unwrap(); }
+        drop(tap);
+        let manifest = archive.close().unwrap();
+        assert_eq!(manifest["sources"]["microphone"]["frames"], 28800);
+        assert_eq!(manifest["sources"]["microphone"]["silence_frames"], 0);
+    }
+    #[test]
+    fn a_short_loss_that_persists_becomes_silence_once() {
+        let root = tempfile::tempdir().unwrap();
+        let (tap, archive) = SourceArchive::start(root.path(), true, false).unwrap();
+        // 100 ms were lost before the first chunk and never came back.
+        for index in 0..30 { tap.push(&chunk(4800, 0.2 + index as f64 / 10.0)).unwrap(); }
+        drop(tap);
+        let manifest = archive.close().unwrap();
+        assert_eq!(manifest["sources"]["microphone"]["silence_frames"], 4800);
+        assert_eq!(manifest["sources"]["microphone"]["frames"], 30*4800+4800);
+    }
+    #[test]
+    fn a_capture_left_open_by_a_crash_is_sealed_with_every_sample_on_disk() {
+        let root = tempfile::tempdir().unwrap();
+        let (tap, archive) = SourceArchive::start(root.path(), true, true).unwrap();
+        for index in 0..150 { tap.push(&chunk(480, (index+1) as f64/100.0)).unwrap(); }
+        let path = root.path().join("sources/progress.json");
+        let deadline = std::time::Instant::now()+std::time::Duration::from_secs(5);
+        while serde_json::from_slice::<Value>(&std::fs::read(&path).unwrap()).unwrap()["sources"]["microphone"] == 0 {
+            assert!(std::time::Instant::now()<deadline);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        // The process dies here: nothing is closed, the system source never spoke.
+        std::mem::forget(tap);
+        std::mem::forget(archive);
+        let open: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let manifest = recover(root.path()).unwrap().unwrap();
+        assert_eq!(manifest["recovered"], true);
+        assert_eq!(manifest["capture_id"], open["capture_id"]);
+        assert!(manifest["sources"]["microphone"]["frames"].as_u64().unwrap() >= open["sources"]["microphone"].as_u64().unwrap());
+        assert!(manifest["sources"].get("system").is_none());
+        let wav = std::fs::read(root.path().join("sources/microphone.wav")).unwrap();
+        let frames = manifest["sources"]["microphone"]["frames"].as_u64().unwrap() as usize;
+        assert_eq!(wav.len(), 44+frames*2);
+        assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()) as usize, frames*2);
+        assert!(recover(root.path()).unwrap().is_none());
     }
     #[test]
     fn pause_gap_preserves_the_recording_clock_in_each_source() {

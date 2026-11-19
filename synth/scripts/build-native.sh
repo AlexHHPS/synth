@@ -21,7 +21,7 @@ rtk proxy xcrun swift build --package-path synth/speakers/native \
     --cache-path synth/.toolchains/swift-cache \
     --config-path synth/.toolchains/swift-config \
     --security-path synth/.toolchains/swift-security -c release
-rtk proxy cargo build -p llama-helper --release --features metal
+CMAKE_DISABLE_FIND_PACKAGE_OpenSSL=TRUE rtk proxy cargo build -p llama-helper --release --features metal
 rtk proxy cp "$CARGO_TARGET_DIR/release/llama-helper" \
     frontend/src-tauri/binaries/llama-helper-aarch64-apple-darwin
 cd frontend

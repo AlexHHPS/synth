@@ -25,8 +25,19 @@ class BusyGatewayTests(unittest.TestCase):
         self.assertEqual(omniroute._send(opener, object(), sleep=waits.append), b'{"ok": true}')
         self.assertEqual((opener.calls, waits), (3, [omniroute.BUSY_WAIT_S] * 2))
 
-    def test_other_errors_are_not_retried(self):
-        opener = Opener([503, 200])
+    def test_a_restarting_gateway_is_retried_before_any_content_is_read(self):
+        opener = Opener([503, 502, 200])
+        omniroute._send(opener, object(), sleep=lambda s: None)
+        self.assertEqual(opener.calls, 3)
+
+    def test_a_gateway_that_stays_down_fails_after_bounded_retries(self):
+        opener = Opener([503] * 10)
+        with self.assertRaises(urllib.error.HTTPError):
+            omniroute._send(opener, object(), sleep=lambda s: None)
+        self.assertEqual(opener.calls, len(omniroute.TRANSIENT_WAITS_S) + 1)
+
+    def test_rejected_requests_are_not_retried(self):
+        opener = Opener([400, 200])
         with self.assertRaises(urllib.error.HTTPError):
             omniroute._send(opener, object(), sleep=lambda s: None)
         self.assertEqual(opener.calls, 1)

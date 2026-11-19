@@ -25,6 +25,32 @@ def capacity():
     return value
 
 
+# A job that has taken its worker down this many times is not retried again.
+MAX_ATTEMPTS = 5
+
+
+def reap(db):
+    """Close jobs nobody will ever finish, so they stop holding their meeting.
+
+    A running job whose lease expired is normally reclaimed. Two kinds are not:
+    one for a transcript that has since been replaced (never claimable again),
+    and one that has already failed MAX_ATTEMPTS times without reporting why,
+    which is what a job that kills its worker looks like.
+    """
+    db.execute("""UPDATE jobs SET state='cancelled',lease_owner=NULL,lease_until=NULL,updated_at=now()
+        WHERE kind='document' AND state='running' AND lease_until<=now()
+        AND (payload->>'transcript_version')::int<
+            (SELECT max(version) FROM transcript_versions WHERE meeting_id=jobs.meeting_id)""")
+    exhausted = db.execute("""UPDATE jobs SET state='failed',error_code='attempts_exhausted',
+        lease_owner=NULL,lease_until=NULL,updated_at=now()
+        WHERE kind='document' AND state='running' AND lease_until<=now() AND attempts>=%s
+        RETURNING meeting_id,payload""", (MAX_ATTEMPTS,)).fetchall()
+    for job in exhausted:
+        db.execute("""UPDATE meetings SET state='failed',updated_at=now() WHERE id=%s AND state IN ('queued','processing')
+            AND (SELECT max(version) FROM transcript_versions WHERE meeting_id=%s)=%s""",
+            (job["meeting_id"], job["meeting_id"], job["payload"].get("transcript_version")))
+
+
 def claim(db, worker, lease_seconds=120, max_running=None):
     limit = capacity() if max_running is None else max_running
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 8:
@@ -34,6 +60,7 @@ def claim(db, worker, lease_seconds=120, max_running=None):
     active = db.execute("SELECT count(*) AS n FROM jobs WHERE state='running' AND lease_until>now()").fetchone()["n"]
     if active >= limit:
         return None
+    reap(db)
     candidate = db.execute("""SELECT id,meeting_id FROM jobs WHERE
         ((state='queued' AND available_at<=now()) OR (state='running' AND lease_until<=now()))
         AND (payload->>'transcript_version')::int=
@@ -75,6 +102,24 @@ def checkpoint(db, job_id, worker, attempt, value):
         """UPDATE jobs SET checkpoint=%s,updated_at=now()
         WHERE id=%s AND lease_owner=%s AND attempts=%s AND state='running'
         AND lease_until>now() RETURNING id""", (Jsonb(value), job_id, worker, attempt),
+    ).fetchone() is not None
+
+
+# A failed acta is tried again by itself before anyone has to press «Reintentar»:
+# most failures are a gateway restart, a model answer that did not parse or a
+# context edit, and the next attempt succeeds. Waits before attempts 2, 3 and 4.
+RETRY_DELAYS_S = (30, 120, 600)
+
+
+def defer(db, job_id, worker, attempt, error_code):
+    """Release a failed attempt to run again later; False when no automatic attempt is left."""
+    if attempt > len(RETRY_DELAYS_S):
+        return False
+    return db.execute(
+        """UPDATE jobs SET state='queued',error_code=%s,lease_owner=NULL,lease_until=NULL,
+        available_at=now()+(%s * interval '1 second'),updated_at=now()
+        WHERE id=%s AND lease_owner=%s AND attempts=%s AND state='running'
+        AND lease_until>now() RETURNING id""", (error_code, RETRY_DELAYS_S[attempt - 1], job_id, worker, attempt),
     ).fetchone() is not None
 
 

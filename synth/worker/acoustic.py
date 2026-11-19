@@ -30,7 +30,7 @@ def prepare_acoustic_sources(normalized, raw, lock_fd=None, configuration=None):
         frames = mic.getnframes()
         duration = frames/mic.getframerate()
     try:
-        process = run_process([python, '-I', str(RUNNER)],
+        process = run_process([python, '-I', '-B', str(RUNNER)],
                                  input=json.dumps(request), text=True, capture_output=True,
                                  env={**os.environ, 'HF_HUB_OFFLINE': '1'}, timeout=min(3600, duration+60),
                                  pass_fds=() if lock_fd is None else (lock_fd,))

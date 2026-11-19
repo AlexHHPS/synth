@@ -52,7 +52,7 @@ class WorkerMinutesTests(unittest.TestCase):
         self.db.commit()
         model = FakeModel([GOOD_TOPIC_1, GOOD_TOPIC_2])
         with patch.object(main, "connect", side_effect=self.connect), \
-             patch.object(main, "completion", side_effect=lambda messages, max_tokens: model(messages, max_tokens)):
+             patch.object(main, "completion", side_effect=lambda messages, max_tokens, on_delta=None: model(messages, max_tokens)):
             main.run(claimed)
         self.db.rollback()
         document = self.db.execute("SELECT content, markdown FROM document_versions WHERE meeting_id=%s", (self.mid,)).fetchone()
@@ -72,21 +72,39 @@ class WorkerMinutesTests(unittest.TestCase):
         self.db.commit()
         model = FakeModel([GOOD_TOPIC_1, GOOD_TOPIC_2])
         with patch.object(main, "connect", side_effect=self.connect), \
-             patch.object(main, "completion", side_effect=lambda messages, max_tokens: model(messages, max_tokens)):
+             patch.object(main, "completion", side_effect=lambda messages, max_tokens, on_delta=None: model(messages, max_tokens)):
             main.run(claimed)
         self.db.rollback()
 
     def test_folder_move_while_model_is_running_cannot_publish_or_checkpoint_old_context(self):
         self.context_change_during_inference('UPDATE meetings SET folder_id=NULL WHERE id=%s',(self.mid,))
 
-    def test_glossary_revocation_while_model_is_running_cannot_publish_or_checkpoint_old_context(self):
-        self.context_change_during_inference("UPDATE glossary_terms SET status='descartado' WHERE term=%s",('Valdivar',))
+    def test_glossary_revocation_while_model_is_running_rewrites_the_acta_with_the_current_glossary(self):
+        """0.6.0: a glossary edit no longer fails the acta. The answer written with the revoked term is
+        neither saved nor published; the acta is written again with the glossary as it now is."""
+        from synth.worker import main,queue
+        claimed=queue.claim(self.db,main.WORKER,300);self.db.commit()
+        model=FakeModel([GOOD_TOPIC_1,GOOD_TOPIC_2,GOOD_TOPIC_1,GOOD_TOPIC_2])
+        def completion(messages,max_tokens,on_delta=None):
+            with self.connect() as changed:
+                changed.execute("UPDATE glossary_terms SET status='descartado' WHERE term=%s",('Valdivar',))
+            return model(messages,max_tokens)
+        with patch.object(main,'connect',side_effect=self.connect),patch.object(main,'completion',side_effect=completion):
+            main.run(claimed)
+        self.db.rollback()
+        self.assertEqual(len(model.calls),2)
+        self.assertIn('Valdivar (concepto',model.calls[0][1]['content'])
+        self.assertNotIn('Valdivar (concepto',model.calls[1][1]['content'])
+        self.assertEqual(self.db.execute('SELECT state FROM jobs WHERE id=%s',(claimed['id'],)).fetchone()['state'],'succeeded')
+        self.assertEqual(self.db.execute('SELECT count(*) AS n FROM document_versions WHERE meeting_id=%s',(self.mid,)).fetchone()['n'],1)
+        # Only the answer written with the current glossary was kept.
+        self.assertEqual(self.db.execute('SELECT count(*) AS n FROM document_model_responses WHERE job_id=%s',(claimed['id'],)).fetchone()['n'],1)
 
     def test_another_meeting_adding_glossary_terms_does_not_interrupt_a_valid_generation(self):
         from synth.worker import main,queue
         claimed=queue.claim(self.db,main.WORKER,300);self.db.commit()
         model=FakeModel([GOOD_TOPIC_1,GOOD_TOPIC_2]);added=False
-        def completion(messages,max_tokens):
+        def completion(messages, max_tokens, on_delta=None):
             nonlocal added
             if not added:
                 with self.connect() as updated:
@@ -103,7 +121,7 @@ class WorkerMinutesTests(unittest.TestCase):
         claimed=queue.claim(self.db,main.WORKER,300);self.db.commit()
         model=FakeModel([GOOD_TOPIC_1,GOOD_TOPIC_2])
         calls=[]
-        def completion(messages,max_tokens):
+        def completion(messages, max_tokens, on_delta=None):
             calls.append(messages)
             with self.connect() as moved:
                 moved.execute(statement,parameters)
@@ -114,10 +132,54 @@ class WorkerMinutesTests(unittest.TestCase):
         self.assertEqual(len(calls),1)
         self.assertEqual(self.db.execute('SELECT count(*) AS n FROM document_versions WHERE meeting_id=%s',(self.mid,)).fetchone()['n'],0)
         self.assertEqual(self.db.execute('SELECT count(*) AS n FROM document_model_responses WHERE job_id=%s',(claimed['id'],)).fetchone()['n'],0)
-        job=self.db.execute('SELECT state,error_code FROM jobs WHERE id=%s',(claimed['id'],)).fetchone()
-        self.assertEqual(job,{'state':'failed','error_code':'generation_context_changed'})
-        events=self.db.execute('SELECT kind FROM document_generation_events WHERE meeting_id=%s ORDER BY sequence',(self.mid,)).fetchall()
-        self.assertEqual([e['kind'] for e in events],['started','failed'])
+        # 0.6.0: not a dead end. The job waits and runs again with the context as it now is.
+        job=self.db.execute("SELECT state,error_code,available_at>now() AS later FROM jobs WHERE id=%s",(claimed['id'],)).fetchone()
+        self.assertEqual(job,{'state':'queued','error_code':'generation_context_changed','later':True})
+        generation=self.db.execute('SELECT state FROM document_generations WHERE meeting_id=%s',(self.mid,)).fetchone()
+        self.assertEqual(generation['state'],'superseded')
+        self.assertEqual(self.db.execute('SELECT state FROM meetings WHERE id=%s',(self.mid,)).fetchone()['state'],'processing')
+
+    def test_a_failed_attempt_runs_again_by_itself_and_publishes(self):
+        from synth.worker import main,queue
+        claimed=queue.claim(self.db,main.WORKER,300);self.db.commit()
+        def down(messages,max_tokens,on_delta=None):
+            raise ValueError('gateway_unavailable_or_invalid')
+        with patch.object(main,'connect',side_effect=self.connect),patch.object(main,'completion',side_effect=down):
+            main.run(claimed)
+        self.db.rollback()
+        self.assertIsNone(queue.claim(self.db,main.WORKER,300))  # it waits before trying again
+        self.db.execute("UPDATE jobs SET available_at=now() WHERE id=%s",(claimed['id'],));self.db.commit()
+        again=queue.claim(self.db,main.WORKER,300);self.db.commit()
+        self.assertEqual(again['attempts'],2)
+        model=FakeModel([GOOD_TOPIC_1,GOOD_TOPIC_2])
+        with patch.object(main,'connect',side_effect=self.connect),patch.object(main,'completion',side_effect=lambda messages,max_tokens,on_delta=None:model(messages,max_tokens)):
+            main.run(again)
+        self.db.rollback()
+        self.assertEqual(self.db.execute('SELECT state FROM jobs WHERE id=%s',(claimed['id'],)).fetchone()['state'],'succeeded')
+        self.assertEqual(self.db.execute('SELECT state FROM meetings WHERE id=%s',(self.mid,)).fetchone()['state'],'ready')
+
+    def test_after_automatic_attempts_run_out_the_meeting_asks_for_attention(self):
+        from synth.worker import main,queue
+        self.db.execute("UPDATE jobs SET attempts=%s",(len(queue.RETRY_DELAYS_S),));self.db.commit()
+        claimed=queue.claim(self.db,main.WORKER,300);self.db.commit()
+        def down(messages,max_tokens,on_delta=None):
+            raise ValueError('gateway_unavailable_or_invalid')
+        with patch.object(main,'connect',side_effect=self.connect),patch.object(main,'completion',side_effect=down):
+            main.run(claimed)
+        self.db.rollback()
+        self.assertEqual(self.db.execute('SELECT state FROM jobs WHERE id=%s',(claimed['id'],)).fetchone()['state'],'failed')
+        self.assertEqual(self.db.execute('SELECT state FROM meetings WHERE id=%s',(self.mid,)).fetchone()['state'],'failed')
+
+    def test_a_late_attempt_writes_the_acta_with_the_sectioned_pipeline(self):
+        from synth.worker import main,queue
+        self.db.execute("UPDATE jobs SET attempts=%s",(main.SECTIONED_FROM_ATTEMPT-1,));self.db.commit()
+        claimed=queue.claim(self.db,main.WORKER,300);self.db.commit()
+        model=FakeModel([GOOD_TOPIC_1,GOOD_TOPIC_2])
+        with patch.object(main,'connect',side_effect=self.connect),patch.object(main,'completion',side_effect=lambda messages,max_tokens,on_delta=None:model(messages,max_tokens)):
+            main.run(claimed)
+        self.db.rollback()
+        self.assertTrue(any('Divide este tramo' in call[1]['content'] for call in model.calls))
+        self.assertEqual(self.db.execute('SELECT state FROM jobs WHERE id=%s',(claimed['id'],)).fetchone()['state'],'succeeded')
 
     def resume_interrupted_context(self,move):
         from synth.worker import main,queue
@@ -125,10 +187,12 @@ class WorkerMinutesTests(unittest.TestCase):
             pass
         claimed=queue.claim(self.db,main.WORKER,300);self.db.commit()
         first=FakeModel([GOOD_TOPIC_1,GOOD_TOPIC_2])
-        def interrupted(messages,max_tokens):
+        def interrupted(messages, max_tokens, on_delta=None):
             if 'Tema: Infraestructura y permisos\n\nExtrae' in messages[1]['content']:
                 raise ProcessExit()
             return first(messages,max_tokens)
+        # Per-topic resumption belongs to the sectioned pipeline, kept for rollback.
+        sectioned=patch.object(main,'STRATEGY','sectioned');sectioned.start();self.addCleanup(sectioned.stop)
         with patch.object(main,'connect',side_effect=self.connect),patch.object(main,'completion',side_effect=interrupted):
             with self.assertRaises(ProcessExit):
                 main.run(claimed)
@@ -141,7 +205,7 @@ class WorkerMinutesTests(unittest.TestCase):
         self.db.commit()
         recovered=queue.claim(self.db,main.WORKER,300);self.db.commit()
         model=FakeModel([GOOD_TOPIC_1,GOOD_TOPIC_2] if move else [GOOD_TOPIC_2])
-        with patch.object(main,'connect',side_effect=self.connect),patch.object(main,'completion',side_effect=lambda messages,max_tokens:model(messages,max_tokens)):
+        with patch.object(main,'connect',side_effect=self.connect),patch.object(main,'completion',side_effect=lambda messages, max_tokens, on_delta=None:model(messages,max_tokens)):
             main.run(recovered)
         self.db.rollback()
         result=self.db.execute('SELECT state,checkpoint FROM jobs WHERE id=%s',(claimed['id'],)).fetchone()
@@ -214,7 +278,7 @@ class WorkerMinutesTests(unittest.TestCase):
         self.db.commit()
         model = FakeModel([GOOD_TOPIC_1, GOOD_TOPIC_2])
         with patch.object(main, "connect", side_effect=self.connect), \
-             patch.object(main, "completion", side_effect=lambda messages, max_tokens: model(messages, max_tokens)):
+             patch.object(main, "completion", side_effect=lambda messages, max_tokens, on_delta=None: model(messages, max_tokens)):
             main.run(claimed)
         self.db.rollback()
         latest = self.route("GET", "/v1/meetings/{meeting_id}/tasks")(self.mid, context)["items"]

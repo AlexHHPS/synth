@@ -40,7 +40,7 @@ function VoiceRow({ match, profiles, excerpt, disabled, decide }: {
   return <li className="voice-live-person" data-slot="live-voice">
     <div className="voice-live-person-heading">
       <strong>{match.candidate_name ?? 'Voz sin identificar'}</strong>
-      {match.candidate_name && <span className="voice-live-identity-state" data-confirmed={match.confirmed}>{match.confirmed ? 'Confirmada por ti' : 'Sugerida'}</span>}
+      {match.candidate_name && <span className="voice-live-identity-state" data-confirmed={match.confirmed}>{match.confirmed ? 'Confirmada por ti' : match.state === 'ask' ? 'Posible, sin certeza' : 'Sugerida'}</span>}
       <time>{time(at)} · {match.source === 'microphone' ? 'Micrófono' : 'Ordenador'}</time>
     </div>
     {excerpt && <p className="voice-live-excerpt">{excerpt}</p>}
@@ -69,7 +69,8 @@ export function LiveVoices({ status, error, saving, transcripts, refresh, decide
     <summary><h2>Voces</h2><span>{error || unavailable ? 'No disponible' : matches.length ? `${confirmed} ${confirmed === 1 ? 'confirmada' : 'confirmadas'}` : 'Escuchando…'}</span></summary>
     {error ? <div className="voice-live-voice-error" role="status"><span>{error}</span><Button variant="outline" onClick={() => void refresh()}>Actualizar voces</Button></div> :
       unavailable ? <p className="voice-notice">La identificación de voces no está disponible. La grabación continúa.</p> :
-      matches.length > 0 && <><p className="voice-notice">Una confirmación ayuda a reconocer esta voz durante la reunión.</p>
+      matches.length === 0 ? <p role="status" className="voice-notice">Las voces aparecerán cuando haya suficiente audio para distinguirlas.</p> :
+      <><p className="voice-notice">Una confirmación ayuda a reconocer esta voz durante la reunión.</p>
       <ul>{recent.map(match => <VoiceRow key={match.group_id} match={match} profiles={[...(status?.eligible_profiles ?? [])].sort((a, b) => Number(expectedParticipants.includes(b.employee_id)) - Number(expectedParticipants.includes(a.employee_id)))}
         disabled={saving !== null} decide={decide}
         excerpt={transcripts.filter(segment => voiceForSegment(segment, matches)?.group_id === match.group_id).slice(0,2).map(segment => segment.text).join(' ').slice(0,220)} />)}</ul>

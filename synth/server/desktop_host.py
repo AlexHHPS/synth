@@ -16,7 +16,7 @@ from uuid import UUID
 from synth.worker.desktop_pipeline import APPDATA, CAPTURE, STATE, LocalAPI, work_once
 from synth.worker.desktop_queue import DesktopQueue, QueueError
 from synth.speakers import onboarding
-from . import audio_setup
+from . import audio_setup, vision_setup
 
 DATABASE = STATE / "queue.sqlite3"
 STOP = threading.Event()
@@ -92,7 +92,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    def browser_callback(self, status, *, calendar=False, code=None):
+    def browser_callback(self, status, *, calendar=False, code=None, drive=False):
         from html import escape
         if status < 400:
             title = 'Calendario conectado' if calendar else 'Ya has iniciado sesión'
@@ -106,6 +106,9 @@ class Handler(BaseHTTPRequestHandler):
         else:
             title = 'No se pudo conectar el calendario' if calendar else 'No se pudo completar el acceso'
             detail = 'Vuelve a Synth para revisar el estado de la conexión.'
+        if drive and status == 200:
+            title = 'Google Drive conectado'
+            detail = 'Vuelve a Synth para seleccionar el archivo que quieres importar.'
         # No assets, scripts, copied callback URL or provider error text. Keep the
         # one-use authorization code out of referrers and browser resource requests.
         payload = ('''<!doctype html><html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -144,12 +147,14 @@ class Handler(BaseHTTPRequestHandler):
     def handle_request(self):
         if self.command == "GET" and self.path.startswith("/auth/callback/"):
             from . import desktop_auth
-            calendar = bool(desktop_auth.FLOW and desktop_auth.FLOW.get('calendar'))
+            flow = desktop_auth.FLOW or {}
+            calendar = bool(flow.get('calendar'))
+            drive = bool(flow.get('drive'))
             try:
                 desktop_auth.callback(self.path)
-                self.browser_callback(200, calendar=calendar)
+                self.browser_callback(200, calendar=calendar, drive=drive)
             except ValueError as error:
-                self.browser_callback(400, calendar=calendar, code=str(error))
+                self.browser_callback(400, calendar=calendar, drive=drive, code=str(error))
             return
         if not self.authorized():
             return
@@ -170,9 +175,31 @@ class Handler(BaseHTTPRequestHandler):
                     self.respond(200,desktop_auth.begin()); return
                 if self.command=="POST" and self.path=="/v1/auth/calendar":
                     self.respond(200,desktop_auth.begin(calendar=True)); return
+                if self.path=="/v1/auth/drive" and self.command=="GET":
+                    self.respond(200,desktop_auth.drive_state()); return
+                if self.path=="/v1/auth/drive" and self.command=="POST":
+                    self.respond(200,desktop_auth.begin(drive=True)); return
                 if self.command=="POST" and self.path=="/v1/auth/logout":
                     self.respond(200,desktop_auth.logout()); return
                 self.respond(404,{"detail":"host_route_missing"}); return
+            if self.command == "POST" and self.path in {"/v1/drive/media", "/v1/drive/folder", "/v1/drive/browse"}:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 1 <= length <= 4096 or self.headers.get("Transfer-Encoding"):
+                    raise QueueError("host_body_invalid")
+                body = json.loads(self.rfile.read(length))
+                from .drive_media import browse, download, folder_videos
+                if self.path == "/v1/drive/browse":
+                    self.respond(200, browse(body))
+                    return
+                if self.path == "/v1/drive/folder":
+                    if not isinstance(body, dict) or set(body) != {"link"}:
+                        raise QueueError("host_body_invalid")
+                    self.respond(200, folder_videos(body["link"]))
+                else:
+                    if not isinstance(body, dict) or set(body) != {"link", "video"}:
+                        raise QueueError("host_body_invalid")
+                    self.respond(201, download(body["link"], body["video"], CAPTURE))
+                return
             if self.command == "GET" and self.path == "/v1/status":
                 backend = LocalAPI().base_url
                 from synth.worker.qwen_asr import CONFIG
@@ -191,6 +218,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.command=='POST' and self.path=='/v1/audio/setup/retry':
                 self.respond(202,audio_setup.start());return
+            if self.path == '/v1/vision/setup':
+                if self.command == 'GET':
+                    self.respond(200, vision_setup.status())
+                    return
+                if self.command == 'POST':
+                    self.respond(202, vision_setup.start())
+                    return
             if self.command == 'POST' and self.path == '/v1/capture/context':
                 import time
                 from synth.worker.consolidated_capture import atomic_json
@@ -225,8 +259,11 @@ class Handler(BaseHTTPRequestHandler):
                         raise QueueError('capture_context_folder_changed')
                     terms = [term['term'] for term in pack['glossary']]
                 else:
+                    # Measured: a broad workspace list makes recognition worse.
+                    # Only what people curated or what belongs to this folder.
                     terms = api.call('GET', '/v1/glossary?status=aprobado'+('&folder_id='+folder_id if folder_id else ''))['items']
-                    terms = [term['term'] for term in terms[:40]]
+                    terms = [term for term in terms if term.get('scope') == 'folder' or term.get('origin') in ('manual', 'correccion')]
+                    terms = [term['term'] for term in sorted(terms, key=lambda term: -term.get('occurrences', 0))[:20]]
                 terms = vocabulary([term for term in terms if len(term)<=60])
                 api.assert_current_principal()
                 with CONTEXT_LOCK:

@@ -134,7 +134,7 @@ def ask(db, actor, body: Ask) -> dict[str, Any]:
 
 def read(db, actor, question_id) -> dict[str, Any]:
     row = db.execute("""SELECT id,question,state,answer,passages,error_code,created_at FROM questions
-        WHERE id=%s AND asker_id=%s AND created_at > now() - interval '7 days'""", (question_id, actor["id"])).fetchone()
+        WHERE id=%s AND asker_id=%s AND kind='ask' AND created_at > now() - interval '7 days'""", (question_id, actor["id"])).fetchone()
     if not row:
         raise HTTPException(404, "La pregunta no está disponible.")
     # Access can change after asking: every cited meeting is checked again on each read.

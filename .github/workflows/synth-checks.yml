@@ -34,8 +34,10 @@ jobs:
           python-version: '3.12'
           cache: pip
       - run: pip install -r synth/deploy/requirements.txt -r synth/tests/requirements-test.txt -r synth/host-build-requirements.txt
-      - name: Unit and PostgreSQL tests
-        run: python -m unittest discover -s synth/tests
+      - name: Install FFmpeg for media tests
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Unit, media and PostgreSQL tests
+        run: python -m pytest -q synth/tests
       - name: Public source audit (final tree)
         run: python scripts/audit-public.py --tree HEAD
       - name: Public source audit (every commit in the pull request)

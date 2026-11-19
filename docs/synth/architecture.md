@@ -20,7 +20,7 @@ it does not authorize or start recording automatically.
 
 The Mac host owns resumable acoustic stages, ASR, diarization, enrollment and
 comparison of compatible voice embeddings. Audio is erased after acoustic
-processing; the active host expires interrupted audio within 24 hours.
+processing; the active host expires interrupted audio after seven days.
 An offline/stopped host cannot execute a deletion timer. No raw recordings are
 uploaded to the library, database or LLM gateway.
 

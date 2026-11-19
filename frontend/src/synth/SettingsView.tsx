@@ -7,7 +7,7 @@ import { LogOut, RefreshCw, Settings2, UserRound } from 'lucide-react';
 import { Button } from './design-system/button';
 import { ChecksList, PermissionRows } from './SetupParts';
 import { restartSetup } from './setup';
-import { useChecks, usePermissions } from './useSetup';
+import { useChecks, usePermissions, useVisionSetup } from './useSetup';
 import { message, pipelineRequest } from './api';
 import './setup.css';
 
@@ -15,6 +15,7 @@ interface SettingsViewProps { email?: string; onOpenVoice: () => void }
 
 export function SettingsView({ email, onOpenVoice }: SettingsViewProps) {
   const mac = useChecks(true);
+  const vision = useVisionSetup(true);
   const permissions = usePermissions();
   const [version, setVersion] = useState('');
   const [busy, setBusy] = useState(false);
@@ -31,11 +32,11 @@ export function SettingsView({ email, onOpenVoice }: SettingsViewProps) {
     <div className="voice-page-heading"><div><p className="voice-eyebrow">TU MAC</p><h1>Ajustes</h1><p>Estado de este Mac, permisos y tu cuenta.</p></div><Settings2 size={22} /></div>
     {error && <div className="voice-alert" role="alert">{error}</div>}
     <section className="synth-settings-section">
-      <header><h2>Este Mac</h2><Button size="sm" variant="outline" disabled={mac.running} onClick={mac.rerun}><RefreshCw size={14} /> Volver a comprobar</Button></header>
-      <ChecksList checks={mac.checks} />
+      <header><h2>Este Mac</h2><Button size="sm" variant="outline" disabled={mac.running} onClick={() => { mac.rerun(); vision.refresh(); }}><RefreshCw size={14} /> Volver a comprobar</Button></header>
+      <ChecksList checks={mac.checks} vision={vision} />
     </section>
     <section className="synth-settings-section">
-      <header><h2>Permisos de audio</h2></header>
+      <header><h2>Permisos de grabación</h2></header>
       <PermissionRows states={permissions.states} busy={permissions.busy} onRequest={permissions.request} onOpenSettings={permissions.openSettings} checkLabel />
     </section>
     <section className="synth-settings-section">

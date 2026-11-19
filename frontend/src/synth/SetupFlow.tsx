@@ -7,14 +7,14 @@ import { ArrowLeft, ArrowRight, Check as CheckIcon, Mic, RefreshCw } from 'lucid
 import { Button } from './design-system/button';
 import { ChecksList, PermissionRows } from './SetupParts';
 import { completeSetup, readyToRecord } from './setup';
-import { useChecks, usePermissions } from './useSetup';
+import { useChecks, usePermissions, useVisionSetup } from './useSetup';
 import { message } from './api';
 import './setup.css';
 
 export type SetupExit = 'capture' | 'library' | 'voice';
 type Step = 'welcome' | 'permissions' | 'mac' | 'voice' | 'done';
 const STEPS: { id: Step; title: string }[] = [
-  { id: 'welcome', title: 'Bienvenida' }, { id: 'permissions', title: 'Permisos de audio' },
+  { id: 'welcome', title: 'Bienvenida' }, { id: 'permissions', title: 'Permisos de grabación' },
   { id: 'mac', title: 'Comprobación del Mac' }, { id: 'voice', title: 'Perfil de voz' }, { id: 'done', title: 'Primera nota' },
 ];
 
@@ -25,7 +25,9 @@ export function SetupFlow({ email, onDone }: SetupFlowProps) {
   const [error, setError] = useState('');
   const [finishing, setFinishing] = useState(false);
   const permissions = usePermissions();
-  const mac = useChecks(step === 'mac' || step === 'done');
+  const checkingMac = step === 'mac' || step === 'done';
+  const mac = useChecks(checkingMac);
+  const vision = useVisionSetup(checkingMac);
   const index = STEPS.findIndex(s => s.id === step);
   const go = (offset: number) => { setError(''); setStep(STEPS[index + offset].id); };
 
@@ -59,7 +61,7 @@ export function SetupFlow({ email, onDone }: SetupFlowProps) {
         {step === 'permissions' && <section>
           <p className="synth-eyebrow">Paso 2 de 5</p>
           <h1>Deja que {brand.name} escuche</h1>
-          <p className="synth-lead">macOS te pedirá permiso una vez para cada fuente de audio.</p>
+          <p className="synth-lead">Puedes dar acceso al audio y, si vas a añadir capturas, a la pantalla.</p>
           <PermissionRows states={permissions.states} busy={permissions.busy} onRequest={permissions.request} onOpenSettings={permissions.openSettings} />
           <Nav onBack={() => go(-1)} next={<Button variant="fancy" disabled={permissions.states.mic !== 'granted'} onClick={() => go(1)}>Continuar <ArrowRight size={15} /></Button>}
             aside={permissions.states.mic === 'granted' && permissions.states.system !== 'granted' ? <Button variant="ghost" size="sm" onClick={() => go(1)}>Seguir sin audio del ordenador</Button> : null} />
@@ -67,10 +69,10 @@ export function SetupFlow({ email, onDone }: SetupFlowProps) {
         {step === 'mac' && <section>
           <p className="synth-eyebrow">Paso 3 de 5</p>
           <h1>Comprobamos este Mac</h1>
-          <p className="synth-lead">La transcripción se hace aquí; las actas, en el servicio de tu organización.</p>
-          <ChecksList checks={mac.checks} />
+          <p className="synth-lead">La transcripción y el análisis de imágenes se ejecutan en este Mac. El servicio de actas usa el texto para generar el acta.</p>
+          <ChecksList checks={mac.checks} vision={vision} />
           <Nav onBack={() => go(-1)} next={<Button variant="fancy" disabled={mac.running || !readyToRecord(mac.checks)} onClick={() => go(1)}>Continuar <ArrowRight size={15} /></Button>}
-            aside={!mac.running && !readyToRecord(mac.checks) ? <Button variant="outline" size="sm" onClick={mac.rerun}><RefreshCw size={14} /> Volver a comprobar</Button> : null} />
+            aside={!mac.running && !readyToRecord(mac.checks) ? <Button variant="outline" size="sm" onClick={() => { mac.rerun(); vision.refresh(); }}><RefreshCw size={14} /> Volver a comprobar</Button> : null} />
         </section>}
         {step === 'voice' && <section>
           <p className="synth-eyebrow">Paso 4 de 5 · opcional</p>
@@ -84,7 +86,7 @@ export function SetupFlow({ email, onDone }: SetupFlowProps) {
           <p className="synth-eyebrow">Paso 5 de 5</p>
           <h1>Todo listo para tu primera nota</h1>
           <p className="synth-lead">Graba una reunión o habla para ti. Al terminar tendrás la transcripción y el acta.</p>
-          <ChecksList checks={mac.checks} />
+          <ChecksList checks={mac.checks} vision={vision} />
           <Nav onBack={() => go(-1)} next={<Button variant="fancy" loading={finishing} disabled={mac.running} onClick={() => void finish('capture')}><Mic size={15} /> Grabar mi primera nota</Button>}
             aside={<Button variant="ghost" size="sm" disabled={finishing} onClick={() => void finish('library')}>Ir a la biblioteca</Button>} />
         </section>}
@@ -98,11 +100,12 @@ function Welcome({ onNext }: { onNext: () => void }) {
   return <section>
     <p className="synth-eyebrow">Primer arranque</p>
     <h1>Prepara {brand.name} en este Mac</h1>
-    <p className="synth-lead">Tres minutos: permisos de audio, una comprobación del equipo y, si quieres, tu perfil de voz.</p>
+    <p className="synth-lead">Revisa los permisos y los modelos locales antes de grabar tu primera nota.</p>
     <dl className="synth-data-map">
-      <div><dt>Audio</dt><dd>Se queda en este Mac y se borra en 24 horas.</dd></div>
-      <div><dt>Transcripción</dt><dd>En este Mac, con Whisper.</dd></div>
-      <div><dt>Actas</dt><dd>El texto viaja al Servicio de actas de tu organización.</dd></div>
+      <div><dt>Audio</dt><dd>Se queda en este Mac.</dd></div>
+      <div><dt>Transcripción</dt><dd>En este Mac con Qwen3‑ASR.</dd></div>
+      <div><dt>Capturas</dt><dd>En este Mac con Qwen3‑VL.</dd></div>
+      <div><dt>Actas</dt><dd>El texto se envía al servicio de actas que configures.</dd></div>
     </dl>
     <Nav next={<Button variant="fancy" onClick={onNext}>Empezar <ArrowRight size={15} /></Button>} />
   </section>;

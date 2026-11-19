@@ -19,18 +19,61 @@ pub fn packaged<R: Runtime>(app: &AppHandle<R>) -> bool {
 pub fn active() -> bool { ACTIVE.load(Ordering::SeqCst) }
 pub fn waiting() -> bool { WAITING.load(Ordering::SeqCst) }
 
-fn start_readiness(result: Result<(), String>) -> Result<bool, String> {
-    match result {
-        Ok(()) => Ok(false),
-        Err(error) if error == AUDIO_BUSY => Ok(true),
-        Err(error) => Err(error),
+/// Recording starts as soon as the installation is known to be usable. The
+/// model loads afterwards, next to the capture, and reads the audio from the
+/// start of the durable tracks: the first words of a meeting are not lost to
+/// model loading.
+pub async fn prepare_capture<R:Runtime>(app:&AppHandle<R>) -> Result<(),String> {
+    let root = app.path().app_data_dir().map_err(|_| "No se encuentra la configuración del audio.")?;
+    let resources = app.path().resource_dir().map_err(|_| "No se encuentran los recursos de la app.")?;
+    tokio::task::spawn_blocking(move || Runtime3::read(&root,&resources).map(|_| ())).await
+        .map_err(|_| "No se pudo comprobar el audio.".to_string())??;
+    WAITING.store(false,Ordering::SeqCst);
+    Ok(())
+}
+
+/// What the live runner needs from this installation.
+struct Runtime3 { python:String, model:String, aligner:String, runner:PathBuf }
+impl Runtime3 {
+    fn read(root:&std::path::Path, resources:&std::path::Path) -> Result<Self,String> {
+        let bytes = std::fs::read(root.join("asr-config.json")).map_err(|_| "Espera a que termine la preparación automática de Qwen.")?;
+        let config: Value = serde_json::from_slice(&bytes).map_err(|_| "La configuración de Qwen no es válida.")?;
+        if config["backend"] != "qwen3" { return Err("Espera a que termine la preparación automática de Qwen.".into()); }
+        let python = config["python"].as_str().ok_or("Falta el runtime de Qwen.")?.to_owned();
+        let model = config["asr"].as_str().ok_or("Falta el modelo de Qwen.")?.to_owned();
+        let aligner = config["aligner"].as_str().ok_or("Falta el alineador de Qwen.")?.to_owned();
+        let runner = resources.join("synth-host/_internal/synth/worker/qwen_live_runner.py");
+        if !runner.is_file() || !std::path::Path::new(&python).is_file() { return Err("Reinstala la app para reparar el runtime de Qwen.".into()); }
+        Ok(Self {python,model,aligner,runner})
     }
 }
 
-pub async fn prepare_capture<R:Runtime>(app:&AppHandle<R>) -> Result<(),String> {
-    let queued = start_readiness(get_or_init(app).await.map(|_| ()))?;
-    WAITING.store(queued,Ordering::SeqCst);
-    Ok(())
+/// The runner's own account of a failure, kept for diagnosis. One previous
+/// file is preserved; neither contains audio or transcript text by design of
+/// the runner, which reports codes.
+fn runner_log(root:&std::path::Path) -> Stdio {
+    let directory=root.join("logs");
+    let path=directory.join("qwen-live.log");
+    let open=|| -> std::io::Result<std::fs::File> {
+        std::fs::create_dir_all(&directory)?;
+        if std::fs::metadata(&path).map(|m|m.len()>4*1024*1024).unwrap_or(false) {
+            std::fs::rename(&path,directory.join("qwen-live.previous.log"))?;
+        }
+        std::fs::OpenOptions::new().create(true).append(true).open(&path)
+    };
+    open().map(Stdio::from).unwrap_or_else(|_| Stdio::null())
+}
+
+/// How many times live transcription may be restarted from its journal.
+const RESTARTS: usize = 3;
+const RESTART_WINDOW: Duration = Duration::from_secs(600);
+
+/// A restart is allowed while fewer than RESTARTS happened in the last window.
+fn restart_allowed(history:&mut Vec<std::time::Instant>, now:std::time::Instant) -> bool {
+    history.retain(|at| now.duration_since(*at)<RESTART_WINDOW);
+    if history.len()>=RESTARTS { return false; }
+    history.push(now);
+    true
 }
 
 /// The durable source archive owns audio; drain mixed notifications while waiting.
@@ -107,19 +150,18 @@ pub async fn get_or_init<R: Runtime>(app: &AppHandle<R>) -> Result<Arc<QwenProvi
 
 impl QwenProvider {
     pub async fn start(root: PathBuf, resources: PathBuf) -> Result<Self, String> {
-        let bytes = std::fs::read(root.join("asr-config.json")).map_err(|_| "Espera a que termine la preparación automática de Qwen.")?;
-        let config: Value = serde_json::from_slice(&bytes).map_err(|_| "La configuración de Qwen no es válida.")?;
-        if config["backend"] != "qwen3" { return Err("Espera a que termine la preparación automática de Qwen.".into()); }
-        let python = config["python"].as_str().ok_or("Falta el runtime de Qwen.")?;
-        let model = config["asr"].as_str().ok_or("Falta el modelo de Qwen.")?;
-        let aligner = config["aligner"].as_str().ok_or("Falta el alineador de Qwen.")?;
-        let runner = resources.join("synth-host/_internal/synth/worker/qwen_live_runner.py");
-        if !runner.is_file() || !std::path::Path::new(python).is_file() { return Err("Reinstala la app para reparar el runtime de Qwen.".into()); }
-        let mut child = Command::new(python).arg("-I").arg(runner)
+        let Runtime3 {python,model,aligner,runner} = Runtime3::read(&root,&resources)?;
+        let (model,aligner)=(model.as_str(),aligner.as_str());
+        let mut command = Command::new(python);
+        // The isolated Python process imports modules from the signed app bundle.
+        command.args(["-I", "-B"]).arg(runner)
             .env("HF_HUB_OFFLINE", "1").env("HF_HUB_DISABLE_TELEMETRY", "1")
             .env("SSL_CERT_FILE", "/etc/ssl/cert.pem")
-            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null())
-            .kill_on_drop(true).spawn().map_err(|_| "No se pudo abrir el runtime local de Qwen.")?;
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(runner_log(&root))
+            .kill_on_drop(true);
+        // Its own group, so the speaker helper it starts ends with it.
+        #[cfg(unix)] command.process_group(0);
+        let mut child = command.spawn().map_err(|_| "No se pudo abrir el runtime local de Qwen.")?;
         let input = child.stdin.take().ok_or("No se pudo conectar con Qwen.")?;
         let output = BufReader::new(child.stdout.take().ok_or("No se pudo conectar con Qwen.")?);
         let mut session = Session {child,input,output};
@@ -135,8 +177,17 @@ impl QwenProvider {
 
     async fn stop(&self) {
         if let Some(mut session) = self.session.lock().await.take() {
-            let _ = session.child.start_kill();
-            let _ = tokio::time::timeout(Duration::from_secs(5),session.child.wait()).await;
+            // Ask first: the runner releases the audio lock and its helper.
+            let mut request=b"{\"command\":\"stop\"}\n".to_vec();
+            let asked=session.input.write_all(&mut request).await.is_ok() && session.input.flush().await.is_ok();
+            if !asked || tokio::time::timeout(Duration::from_secs(3),session.child.wait()).await.is_err() {
+                #[cfg(unix)] if let Some(id)=session.child.id() {
+                    // Negative id: every process in the runner's group.
+                    let _=std::process::Command::new("/bin/kill").arg("-KILL").arg(format!("-{id}")).status();
+                }
+                let _ = session.child.start_kill();
+                let _ = tokio::time::timeout(Duration::from_secs(5),session.child.wait()).await;
+            }
         }
     }
 
@@ -167,6 +218,7 @@ pub fn start_capture_task<R:Runtime>(app:AppHandle<R>, mut receiver:tokio::sync:
         let result=run_capture(&app,&mut receiver,&capture).await;
         if result.is_err() {
             shutdown().await;
+            crate::audio::capture_health::emit(&app,"live_transcription_stopped",None);
             let _=app.emit("transcription-error",json!({"error":"incremental_capture_interrupted",
                 "userMessage":"Se interrumpió la transcripción en directo. El audio sigue guardado para recuperarlo al finalizar.",
                 "actionable":true,"capture_id":capture.id,"phase":"active"}));
@@ -195,32 +247,50 @@ async fn run_capture<R:Runtime>(app:&AppHandle<R>, receiver:&mut tokio::sync::mp
     let _=app.emit("transcription-state",json!({"capture_id":capture.id,"state":"active"}));
     provider.attach(capture).await?;
     let (mut cursor,mut restarts,mut first_speech)=(0u64,0u8,false);
+    let mut restart_history=Vec::new();
+    let mut identity=IdentityWatch::new();
     let mut input_closed=None;
+    let mut busy=false;
     loop {
         if input_closed.is_none() {
+            // While the runner reports work done, ask again at once: after a
+            // restart it replays its journal block by block.
+            let pause=Duration::from_millis(if busy {0} else {400});
             tokio::select! {
+                biased;
                 chunk=receiver.recv()=> { if chunk.is_none() { input_closed=Some(std::time::Instant::now()); } },
-                _=tokio::time::sleep(Duration::from_millis(400))=>{},
+                _=tokio::time::sleep(pause)=>{},
             }
         }
-        if crate::synth_desktop::capture_identity(app).await?!=capture.identity {
-            capture.recording.stop_recording(); return Err("La sesión de la captura ha cambiado.".into());
+        match identity.check(app,&capture.identity).await {
+            Owner::Same=>{},
+            // Someone else signed in: this is no longer their meeting to record.
+            Owner::Other=> { capture.recording.stop_recording(); return Err("La sesión de la captura ha cambiado.".into()); },
+            // A lapsed session ends the live text only. The audio keeps being
+            // saved for its owner, who processes it after signing in again.
+            Owner::SignedOut=>return Err("Inicia sesión para continuar con esta captura.".into()),
         }
         let reply=match provider.poll_capture(&capture.id,cursor).await {
             Ok(reply)=>reply,
-            Err(error) if restarts==0=> {
+            Err(error)=> {
+                if !restart_allowed(&mut restart_history,std::time::Instant::now()) { return Err(error); }
                 // Stop/wait before loading the replacement: the file journal
                 // rebuilds AEC/VAD and reuses completed ASR under the same UUID.
                 restarts+=1; provider.stop().await;
-                provider=get_or_init(app).await?; provider.attach(capture).await?;
-                log::warn!("Restarted local capture transcription from its journal");
-                let _=error; continue;
+                tokio::time::sleep(Duration::from_secs(2*restarts as u64)).await;
+                provider=match wait_for_engine(receiver,||get_or_init(app),||{},Duration::from_secs(3)).await? {
+                    Some(provider)=>provider,
+                    None=> {
+                        let _=app.emit("transcription-queue-complete",json!({"capture_id":capture.id,"mode":"deferred"}));
+                        return Ok(());
+                    }
+                };
+                provider.attach(capture).await?;
+                log::warn!("Restarted local capture transcription from its journal ({})",restarts);
+                continue;
             },
-            Err(error)=>return Err(error),
         };
-        if crate::synth_desktop::capture_identity(app).await?!=capture.identity {
-            capture.recording.stop_recording(); return Err("La sesión de la captura ha cambiado.".into());
-        }
+        busy=reply.state=="processed" || !reply.events.is_empty();
         for event in reply.events {
             if let Some(update)=event.update(&capture.id) {
                 super::capture_stream::persist(&capture.sink,&update)?;
@@ -241,6 +311,24 @@ async fn run_capture<R:Runtime>(app:&AppHandle<R>, receiver:&mut tokio::sync::mp
                 if closed.elapsed()>Duration::from_secs(60) { return Err("El audio no confirmó su cierre.".into()); }
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
+        }
+    }
+}
+
+/// Who is recording is re-checked on a cadence, not on every poll. A host
+/// that does not answer for a moment changes nothing.
+enum Owner { Same, SignedOut, Other }
+struct IdentityWatch { checked: std::time::Instant }
+impl IdentityWatch {
+    const EVERY: Duration = Duration::from_secs(15);
+    fn new() -> Self { Self { checked: std::time::Instant::now() } }
+    async fn check<R:Runtime>(&mut self, app:&AppHandle<R>, expected:&str) -> Owner {
+        if self.checked.elapsed()<Self::EVERY { return Owner::Same; }
+        self.checked=std::time::Instant::now();
+        match crate::synth_desktop::capture_identity_state(app).await {
+            Ok(Some(identity)) if identity!=expected=>Owner::Other,
+            Ok(None)=>Owner::SignedOut,
+            _=>Owner::Same,
         }
     }
 }
@@ -333,13 +421,16 @@ mod waiting_tests {
     use std::sync::atomic::AtomicUsize;
 
     #[test]
-    fn only_acoustic_contention_defers_capture_start() {
-        assert_eq!(start_readiness(Ok(())),Ok(false));
-        assert_eq!(start_readiness(Err(AUDIO_BUSY.into())),Ok(true));
-        assert_eq!(start_readiness(Err("missing runtime".into())),Err("missing runtime".into()));
+    fn live_transcription_restarts_are_budgeted_per_window_not_per_meeting() {
+        let start=std::time::Instant::now();
+        let mut history=Vec::new();
+        for _ in 0..RESTARTS { assert!(restart_allowed(&mut history,start)); }
+        assert!(!restart_allowed(&mut history,start+Duration::from_secs(60)));
+        // A meeting that fails again much later gets a fresh budget.
+        assert!(restart_allowed(&mut history,start+RESTART_WINDOW+Duration::from_secs(1)));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn waiting_drains_notifications_and_resumes_with_one_engine() {
         let (sender,mut receiver)=tokio::sync::mpsc::unbounded_channel();
         for n in 0..512 {sender.send(n).unwrap();}
@@ -354,7 +445,7 @@ mod waiting_tests {
         drop(sender);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn notifications_do_not_restart_pending_model_initialization() {
         let (sender,mut receiver)=tokio::sync::mpsc::unbounded_channel();
         for n in 0..512 {sender.send(n).unwrap();}

@@ -63,7 +63,7 @@ def transcribe(wav, working_directory, source_id='import', lock_fd=None, configu
         request['system_prompt'] = prompt
     env = {**os.environ, 'HF_HUB_OFFLINE': '1', 'HF_HUB_DISABLE_TELEMETRY': '1', 'SSL_CERT_FILE': '/etc/ssl/cert.pem'}
     try:
-        result = run_process([configuration['python'], '-I', str(RUNNER)],
+        result = run_process([configuration['python'], '-I', '-B', str(RUNNER)],
                                 input=json.dumps(request), text=True, capture_output=True,
                                 env=env, timeout=min(14400, duration_ms/1000*3+120),
                                 pass_fds=() if lock_fd is None else (lock_fd,))

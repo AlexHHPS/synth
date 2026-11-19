@@ -54,6 +54,7 @@ const NATIVE_IDLE: Record<string, unknown> = {
   trigger_microphone_permission: true, trigger_system_audio_permission_command: true, 'plugin:app|version': '0.4.1',
   get_recording_state: { is_recording: false, is_paused: false, is_active: false, recording_duration: null, active_duration: null },
   get_audio_devices: [],
+  synth_list_recovered_captures: [],
   'plugin:store|load': 1, 'plugin:store|get': [null, false], 'plugin:store|has': false,
 };
 
@@ -277,6 +278,8 @@ export async function mockRequest<T>(method: string, path: string, body?: unknow
     '/v1/voice': () => ({ profiles: [], corporate_profiles: [], sync_state: 'local_only' }),
     '/v1/voice/learning': () => ({ enabled:learningEnabled,sync_state:'available',outbox:{},samples:[] }),
     '/v1/auth/state': authState,
+    '/v1/auth/drive': () => ({ state: 'unavailable' }),
+    '/v1/vision/setup': () => ({ state: 'missing', model: 'qwen3-vl-4b-instruct-4bit' }),
     '/v1/status': () => ({ worker: {}, audio_location: 'this_mac', document_route: 'configured_gateway',
       asr_backend: 'qwen3', audio_setup: {state:'ready',step:3,message:'Audio preparado'} }),
     '/v1/tasks/pipeline': () => ({ items: [] }),

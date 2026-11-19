@@ -76,14 +76,22 @@ class QwenTests(unittest.TestCase):
             forbidden = Mock(side_effect=AssertionError('cached audio decoded again'))
             self.assertEqual(decode_chunks(self.samples(30), forbidden, cache=cache, cache_key='audio:model'), result)
 
-    def test_permanent_token_exhaustion_is_bounded_and_never_published(self):
+    def test_a_span_the_model_cannot_finish_is_withheld_and_the_rest_of_the_meeting_survives(self):
         calls = []
         def generate(clip, **kwargs):
             calls.append(len(clip))
-            return self.decoded(tokens=kwargs['max_tokens'])
-        with self.assertRaisesRegex(ValueError, 'qwen_token_limit_reached'):
-            decode_chunks(self.samples(30), generate)
-        self.assertEqual(len(calls), 4)
+            # The first 3.75 s loop for ever; everything else decodes.
+            looping = len(clip) <= 5*16000 and clip[0] == 9
+            return self.decoded(tokens=kwargs['max_tokens'] if looping or len(clip) > 5*16000 else 3)
+        import numpy as np
+        samples = np.array(self.samples(30))
+        samples[0] = 9
+        result = decode_chunks(samples, generate)
+        incomplete = [c for c in result['chunks'] if c.get('decode_incomplete')]
+        self.assertEqual([(c['start'], c['end'], c['text']) for c in incomplete], [(0, 3.75, '')])
+        self.assertEqual(result['incomplete_seconds'], 3.75)
+        self.assertEqual(len([c for c in result['chunks'] if c['text']]), 7)
+        self.assertNotIn(None, [c['text'] for c in result['chunks']])
 
     def test_silence_policy_keeps_cold_uncertainty_and_never_accepts_incomplete_output(self):
         from unittest.mock import Mock
@@ -120,9 +128,10 @@ class QwenTests(unittest.TestCase):
         from unittest.mock import Mock
         bad = SimpleNamespace(items=[SimpleNamespace(text='Hola', start_time=.5, end_time=1.8)])
         aligner = SimpleNamespace(generate=Mock(return_value=bad), aligner_processor=Processor())
-        with self.assertRaisesRegex(ValueError, 'qwen_alignment_invalid_time'):
-            align_chunk(aligner, [0] * 16000, 'Hola', 0)
+        # 0.6.0: an unplaceable word no longer fails the meeting, and its time still ends inside the clip.
+        words, effort = align_chunk(aligner, [0] * 16000, 'Hola', 0)
         self.assertEqual(aligner.generate.call_count, 3)
+        self.assertEqual((words, effort), ([{'text': 'Hola', 'start_ms': 500, 'end_ms': 1000}], 3))
 
     def test_alignment_can_recover_clipped_leading_context_with_original_clock(self):
         from unittest.mock import Mock
@@ -135,13 +144,16 @@ class QwenTests(unittest.TestCase):
         self.assertEqual(len(aligner.generate.call_args.args[0]), 20*16000)
 
     @patch.dict('sys.modules', {'numpy': SimpleNamespace(pad=lambda clip, width: clip + [0] * width[1])})
-    def test_alignment_text_mismatch_is_never_repaired_or_retried(self):
+    def test_alignment_text_mismatch_keeps_the_recognised_text_with_estimated_times(self):
         from unittest.mock import Mock
         bad = SimpleNamespace(items=[SimpleNamespace(text='Otro', start_time=0, end_time=.5)])
         aligner = SimpleNamespace(generate=Mock(return_value=bad), aligner_processor=Processor())
-        with self.assertRaisesRegex(ValueError, 'qwen_alignment_text_mismatch'):
-            align_chunk(aligner, [0] * 16000, 'Hola', 0)
+        words, effort = align_chunk(aligner, [0] * 32000, 'Hola a todos', 10)
         self.assertEqual(aligner.generate.call_count, 1)
+        self.assertEqual(effort, 3)
+        self.assertEqual([w['text'] for w in words], ['Hola', 'a', 'todos'])
+        self.assertEqual((words[0]['start_ms'], words[-1]['end_ms']), (10000, 12000))
+        self.assertTrue(all(a['end_ms'] == b['start_ms'] for a, b in zip(words, words[1:])))
 
     def test_runner_alignment_error_reaches_the_task_with_safe_code(self):
         with tempfile.TemporaryDirectory() as t:

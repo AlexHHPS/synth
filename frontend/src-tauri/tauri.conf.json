@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Synth",
-  "version": "0.5.0",
+  "version": "0.6.11",
   "identifier": "dev.synth.voice",
   "build": {
     "frontendDist": "../out",
@@ -15,6 +15,7 @@
         "title": "Synth",
         "width": 1100,
         "height": 700,
+        "preventOverflow": true,
         "resizable": true,
         "fullscreen": false,
         "theme": "Light",

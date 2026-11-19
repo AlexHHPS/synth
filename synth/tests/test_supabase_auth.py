@@ -18,6 +18,8 @@ class SupabaseAuthTests(unittest.TestCase):
         self.env = patch.dict(os.environ, {"AUTH_MODE": "supabase", "ALLOWED_DOMAINS": "example.com",
             "SUPABASE_URL": "https://exampleproject.supabase.co", "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_test"})
         self.env.start(); self.addCleanup(self.env.stop)
+        from synth.server.supabase_auth import forget_verdicts
+        forget_verdicts(); self.addCleanup(forget_verdicts)
 
     def status(self, code, function, *args):
         with self.assertRaises(HTTPException) as caught:
@@ -61,6 +63,29 @@ class SupabaseAuthTests(unittest.TestCase):
         request = opener.open.call_args.args[0]
         self.assertEqual(request.full_url, "https://exampleproject.supabase.co/auth/v1/user")
         self.assertEqual(request.headers["Authorization"], "Bearer untrusted.token.payload")
+
+    def test_a_verdict_is_remembered_briefly_and_an_outage_is_never_remembered(self):
+        import urllib.error
+        from synth.server import supabase_auth
+        response = MagicMock(); response.read.return_value = json.dumps(USER).encode()
+        opener = MagicMock(); opener.open.return_value.__enter__.return_value = response
+        with patch("synth.server.supabase_auth.urllib.request.build_opener", return_value=opener):
+            first, second = verified_user("valid.token"), verified_user("valid.token")
+            self.assertEqual(first, second)
+            self.assertEqual(opener.open.call_count, 1)
+            first["email"] = "changed@example.com"
+            self.assertEqual(verified_user("valid.token")["email"], "alex@example.com")
+            with patch.object(supabase_auth.time, "monotonic", return_value=supabase_auth.time.monotonic() + supabase_auth.VERDICT_SECONDS + 1):
+                verified_user("valid.token")
+            self.assertEqual(opener.open.call_count, 2)
+        refused = MagicMock(); refused.open.side_effect = urllib.error.HTTPError("u", 401, "no", {}, None)
+        with patch("synth.server.supabase_auth.urllib.request.build_opener", return_value=refused):
+            self.status(401, verified_user, "junk.token"); self.status(401, verified_user, "junk.token")
+            self.assertEqual(refused.open.call_count, 1)
+        down = MagicMock(); down.open.side_effect = urllib.error.HTTPError("u", 500, "down", {}, None)
+        with patch("synth.server.supabase_auth.urllib.request.build_opener", return_value=down):
+            self.status(503, verified_user, "other.token"); self.status(503, verified_user, "other.token")
+            self.assertEqual(down.open.call_count, 2)
 
     def test_auth_outage_never_falls_back_to_legacy_human_keys(self):
         db = MagicMock(); db.execute.return_value.fetchone.return_value = {"kind": "user"}

@@ -104,10 +104,32 @@ def restore_json(descriptor, root):
     return json.loads(path.read_text())
 
 
+def captured_at(task):
+    """UTC start of a native capture, read from its folder name, or None.
+
+    The desktop names each capture folder "<title>_<YYYY-MM-DD>_<HH-MM>_<id>"
+    in local time when recording starts; the audio itself is gone by upload.
+    """
+    import datetime, re
+    for descriptor in task["metadata"]["sources"].values():
+        match = re.search(r"_(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2})_[0-9a-f]+$", Path(descriptor["path"]).parent.parent.name)
+        if match:
+            try:
+                local = datetime.datetime.strptime(match[1] + " " + match[2], "%Y-%m-%d %H-%M").astimezone()
+            except ValueError:
+                return None
+            return local.astimezone(datetime.timezone.utc).isoformat(timespec="seconds")
+    return None
+
+
 def delete_processed_audio(task, capture):
     """Erase only this closed capture and its normalized copies, before LLM work."""
     root = Path(capture).resolve(strict=True)
     paths = [Path(d["path"]) for d in task["metadata"]["sources"].values()]
+    attachments = {Path(d["path"]) for d in task["metadata"].get("media", ())}
+    paths.extend(attachments)
+    if task["metadata"].get("video_import"):
+        attachments.add(Path(task["metadata"]["sources"]["import"]["path"]))
     normalized = root / ("processed-" + task["id"])
     if normalized.exists() and not normalized.is_symlink():
         paths.extend(p for p in normalized.rglob("*") if p.is_file())
@@ -120,7 +142,7 @@ def delete_processed_audio(task, capture):
                 paths.extend(p for p in source.parent.parent.rglob("*") if p.is_file())
     removed = 0
     for path in set(paths):
-        if path.suffix.lower() not in {".wav", ".mp4", ".m4a", ".flac", ".mp3", ".ogg", ".opus", ".webm", ".aac", ".aiff", ".aif"}:
+        if path not in attachments and path.suffix.lower() not in {".wav", ".mp4", ".m4a", ".flac", ".mp3", ".ogg", ".opus", ".webm", ".aac", ".aiff", ".aif"}:
             continue
         if path.is_symlink() or not path.resolve().is_relative_to(root):
             raise ValueError("audio_cleanup_path_denied")
@@ -513,6 +535,7 @@ def process(queue, task, lease, api, state, lock_fd=None):
         queue.checkpoint(identifier, token, stage, descriptor)
         checkpoints[stage] = descriptor
 
+    from .media import observations, notes_with_media, screen_references, VIDEO_FORMATS
     if "canonical" in checkpoints:
         canonical = restore_json(checkpoints["canonical"], output)
     else:
@@ -541,7 +564,8 @@ def process(queue, task, lease, api, state, lock_fd=None):
                 if not source_path.is_relative_to(queue.capture_root) or file_hash(source_path) != descriptor["sha256"]:
                     raise ValueError("capture_file_changed")
                 target = raw / (source + ".wav")
-                normalize_audio(source_path, target, lock_fd=lock_fd)
+                format_args = {"input_format": VIDEO_FORMATS[source_path.suffix.lower()]} if task["metadata"].get("video_import") else {}
+                normalize_audio(source_path, target, lock_fd=lock_fd, **format_args)
                 target.chmod(0o600)
                 normalized[source] = {"path": str(target), "sha256": file_hash(target)}
             checkpoint("normalized", normalized)
@@ -606,15 +630,44 @@ def process(queue, task, lease, api, state, lock_fd=None):
             raise
         save_json(output / 'transcript-quality.json', quality)
         from synth.speakers.finalize_capture import export_confirmations
-        canonical, voice_actions = export_confirmations(canonical, task, actor, api, Path(state), queue.capture_root, APPDATA)
+        try:
+            canonical, voice_actions = export_confirmations(canonical, task, actor, api, Path(state), queue.capture_root, APPDATA)
+        except QueueError:
+            raise
+        except Exception as error:  # names confirmed live are optional; the transcript is not
+            import logging
+            from synth.speakers.matching import failure_cause
+            logging.getLogger("synth.worker").warning("voice_confirmations_unavailable cause=%s", failure_cause(error))
+            voice_actions = []
         if voice_actions:
             checkpoint('voice_plan', save_json(output/'voice-plan.json', {'actions': voice_actions}))
+        if "media_observed" not in checkpoints and (task["metadata"].get("media") or task["metadata"].get("video_import")):
+            references = screen_references(canonical["segments"], words.get("import", ())) if task["metadata"].get("video_import") else ()
+            items = observations(task, queue.capture_root, raw, lambda: lease.check(queue), lock_fd,
+                                 appdata=APPDATA, references=references)
+            checkpoint("media_observed", save_json(output / "media.json", items))
+        if "media_observed" in checkpoints:
+            canonical["media_observations"] = restore_json(checkpoints["media_observed"], output)
         checkpoint("canonical", save_json(output / "transcript.json", canonical))
+    upload_transcript = canonical
+    notes = task["metadata"].get("notes", "")
+    if canonical.get("media_observations"):
+        if "media_delivery" not in checkpoints:
+            lease.check(queue)
+            document = api.call("GET", "/openapi.json")
+            schemas = document["components"]["schemas"]
+            properties = schemas["Transcript"]["properties"]
+            media_fields = schemas.get("MediaObservation", {}).get("properties", {})
+            required_fields = {key for item in canonical["media_observations"] for key in item}
+            checkpoint("media_delivery", {"structured": "media_observations" in properties and required_fields <= media_fields.keys()})
+        if not checkpoints["media_delivery"]["structured"]:
+            notes = notes_with_media(notes, canonical["media_observations"])
+            upload_transcript = {key: value for key, value in canonical.items() if key != "media_observations"}
     # Suggestions only: no candidate name, score or vector enters the transcript or
     # the document provider. Names appear after the owner confirms them.
     identity = meeting_identity(actor, task, checkpoints, output, raw, lock_fd)
     from synth.speakers.meeting_status import transcript_hash
-    canonical_hash = transcript_hash(canonical)
+    canonical_hash = transcript_hash(upload_transcript)
     identity.update(processing_mode='automatic', transcript_hash=canonical_hash)
     save_json(output / "identity-status.json", identity)
     if 'identified' not in checkpoints:
@@ -626,18 +679,33 @@ def process(queue, task, lease, api, state, lock_fd=None):
             "folder_id": task["metadata"]["folder_id"], "idempotency_key": "desktop:" + identifier}
         if task['metadata'].get('calendar_event_id'):
             meeting_body['calendar_event_id'] = task['metadata']['calendar_event_id']
+        started = captured_at(task)
+        if started:
+            # Dates said in the meeting ("mañana", "el viernes") are relative to
+            # when it happened, which is not when its transcript was uploaded.
+            meeting_body['captured_at'] = started
         meeting = api.call("POST", "/v1/meetings", meeting_body)
-        if task["metadata"].get("notes") and meeting["revision"] == 1:
+        if notes and meeting["revision"] == 1:
             lease.check(queue)
             api.call("PUT", f'/v1/meetings/{meeting["id"]}/notes',
-                {"notes": task["metadata"]["notes"], "expected_revision": meeting["revision"]})
+                {"notes": notes, "expected_revision": meeting["revision"]})
         lease.check(queue)
-        job = api.call("POST", f'/v1/meetings/{meeting["id"]}/transcript',
-            {"transcript": canonical, "idempotency_key": "desktop:" + identifier + ":canonical"})
+        body = {"transcript": upload_transcript, "idempotency_key": "desktop:" + identifier + ":canonical"}
+        if 'voice_plan' in checkpoints:
+            # Names confirmed during the meeting travel with the transcript, so
+            # the service starts one minutes generation instead of starting one
+            # and replacing it a moment later. An older service ignores the key.
+            body["speaker_batch"] = {"actions": restore_json(checkpoints['voice_plan'], output)['actions']}
+        job = api.call("POST", f'/v1/meetings/{meeting["id"]}/transcript', body)
+        # One durable receipt says both things: a retry after an interruption
+        # must not apply the same names a second time.
         checkpoint("uploaded", {"meeting_id": meeting["id"], "job_id": job["job_id"],
-                                "transcript_version": job.get('transcript_version')})
+                                "transcript_version": job.get('transcript_version'),
+                                **({"speakers_applied": True} if job.get("speakers_applied") is True else {})})
     upload = checkpoints["uploaded"]
     if 'voice_plan' in checkpoints:
+        if 'voice_applied' not in checkpoints and upload.get("speakers_applied"):
+            checkpoint('voice_applied', {k: v for k, v in upload.items() if k != "speakers_applied"})
         if 'voice_applied' not in checkpoints:
             actions = restore_json(checkpoints['voice_plan'], output)['actions']
             lease.check(queue)

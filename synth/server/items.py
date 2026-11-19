@@ -114,7 +114,11 @@ def register(app, session_dependency) -> None:
                          (meeting_id,)).fetchone()
         if not row:
             raise HTTPException(404, "La reunión todavía no tiene transcripción.")
-        if db.execute("SELECT 1 FROM jobs WHERE meeting_id=%s AND kind='document' AND state IN ('queued','running')", (meeting_id,)).fetchone():
+        # Only work that is really under way blocks a new acta: a job whose
+        # worker died keeps saying "running" until it is reaped.
+        if db.execute("""SELECT 1 FROM jobs WHERE meeting_id=%s AND kind='document'
+                AND (state='queued' OR (state='running' AND lease_until>now()))
+                AND (payload->>'transcript_version')::int=%s""", (meeting_id, row["version"])).fetchone():
             raise HTTPException(409, "Ya se está generando un acta para esta reunión.")
         job, _ = submit(db, meeting_id, "document", f"{meeting_id}:regenerate:{uuid4()}",
                         {"transcript_version": row["version"], "transcript_hash": row["content_hash"], "human_notes": meeting["notes"]})

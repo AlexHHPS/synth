@@ -42,8 +42,8 @@ class CaptureHostTests(unittest.TestCase):
             if old_folder in path:
                 old_started.set()
                 if not release_old.wait(3): raise ValueError('test_timeout')
-                return {'items':[{'term':'Old confidential client'}]}
-            return {'items':[{'term':'Latest context'}]}
+                return {'items':[{'term':'Old confidential client','origin':'manual'}]}
+            return {'items':[{'term':'Latest context','origin':'manual'},{'term':'Extraído por modelo','origin':'llm','scope':'workspace'}]}
         api.call.side_effect = call
         with tempfile.TemporaryDirectory() as directory, patch.object(host,'APPDATA',Path(directory)), \
                 patch.object(host,'STATE',Path(directory)), patch.object(host,'LocalAPI',return_value=api), \

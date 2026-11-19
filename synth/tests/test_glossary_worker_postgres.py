@@ -149,7 +149,7 @@ class GlossaryWorkerTests(unittest.TestCase):
         self.db.commit()
         model = GlossaryAwareModel([GOOD_TOPIC_1, GOOD_TOPIC_2])
         with patch.object(main, "connect", side_effect=self.connect), \
-             patch.object(main, "completion", side_effect=lambda messages, max_tokens: model(messages, max_tokens)):
+             patch.object(main, "completion", side_effect=lambda messages, max_tokens, on_delta=None: model(messages, max_tokens)):
             main.run(claimed)
         self.db.rollback()
         versions = self.db.execute("SELECT version, content FROM transcript_versions WHERE meeting_id=%s ORDER BY version", (self.mid,)).fetchall()
@@ -176,7 +176,7 @@ class GlossaryWorkerTests(unittest.TestCase):
         self.db.commit()
         model = GlossaryAwareModel([GOOD_TOPIC_1, GOOD_TOPIC_2])
         with patch.object(main, "connect", side_effect=self.connect), \
-             patch.object(main, "completion", side_effect=lambda messages, max_tokens: model(messages, max_tokens)):
+             patch.object(main, "completion", side_effect=lambda messages, max_tokens, on_delta=None: model(messages, max_tokens)):
             main.run(claimed)
         self.db.rollback()
 

@@ -140,7 +140,11 @@ export function MyTasks({ onOpenMeeting }: { onOpenMeeting: (meetingId: string) 
     {error && <div className="voice-alert" role="alert">{error}</div>}
     {tasks === null ? <p role="status" aria-busy="true" className="notebook-muted">Cargando tus tareas…</p>
       : tasks.length ? <TaskList tasks={tasks} showMeeting onOpen={task => onOpenMeeting(task.meeting_id)}
-        onUpdate={async (task, change) => { await request('PATCH', `/v1/tasks/${task.id}`, change); await load(); }} />
+        onUpdate={async (task, change) => {
+          // A failed change is said out loud; the list is reloaded either way.
+          try { await request('PATCH', `/v1/tasks/${task.id}`, change); } catch (e) { setError(message(e)); }
+          await load();
+        }} />
       : <div className="voice-empty"><h2>No tienes tareas abiertas</h2><p>Cuando un acta te asigne algo, o digas «lo hago yo», aparecerá aquí.</p></div>}
   </div>;
 }

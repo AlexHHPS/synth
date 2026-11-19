@@ -7,7 +7,7 @@ from uuid import uuid4
 SERVER = Path(__file__).resolve().parents[1] / "server"
 
 
-CURRENT = list(range(1, 16))
+CURRENT = list(range(1, 18))
 
 
 @unittest.skipUnless(os.environ.get("SYNTH_TEST_DATABASE_URL"), "Disposable PostgreSQL URL required")
@@ -37,7 +37,13 @@ class MigrationTests(unittest.TestCase):
         self.db.execute(schema)
         self.db.execute(schema)
         self.assertEqual(self.versions(), CURRENT)
-        self.db.execute((SERVER / "migrations/0012_document_generations.down.sql").read_text())
+        for name in ("0017_live_notes", "0016_capture_time_and_indexes", "0015_calendar", "0014_voice_samples", "0013_context_scope",
+                     "0012_document_generations"):
+            self.db.execute((SERVER / "migrations" / (name + ".down.sql")).read_text())
+        self.assertEqual(self.versions(), list(range(1, 12)))
+        self.assertIsNone(self.table("calendar_events"))
+        self.assertIsNone(self.table("voice_profile_samples"))
+        self.assertIsNone(self.table("document_generations"))
         self.db.execute((SERVER / "migrations/0011_alias_feedback.down.sql").read_text())
         self.assertIsNone(self.table("correction_reviews"))
         self.db.execute((SERVER / "migrations/0010_rls_per_actor.down.sql").read_text())
@@ -47,13 +53,13 @@ class MigrationTests(unittest.TestCase):
         self.assertIsNone(self.table("questions"))
         self.db.execute((SERVER / "migrations/0007_glossary.down.sql").read_text())
         self.db.execute((SERVER / "migrations/0006_tasks_decisions.down.sql").read_text())
-        # v13-v15 have no down scripts; everything with one is rolled back to v5.
-        self.assertEqual([v for v in self.versions() if v <= 12], [1, 2, 3, 4, 5])
+        self.assertEqual(self.versions(), [1, 2, 3, 4, 5])
         self.assertIsNone(self.table("tasks"))
         self.assertIsNone(self.table("glossary_terms"))
         self.assertIsNotNone(self.table("meetings"))
         self.db.execute(schema)
         self.assertEqual(self.versions(), CURRENT)
+        self.assertIsNotNone(self.table("calendar_events"))
 
     def test_v9_maps_old_kinds_to_the_taxonomy_and_back(self):
         import psycopg

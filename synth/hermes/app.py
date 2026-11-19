@@ -17,7 +17,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from .config import MODELS, capacity
 
 app = FastAPI(title="Synth Hermes")
@@ -34,6 +34,7 @@ def failure_code(stderr: str) -> str:
 LANES = threading.BoundedSemaphore(capacity())
 COMMAND = [sys.executable, "-m", "synth.hermes.run"]
 PROCESS_TIMEOUT = 170
+MAX_TOKENS = 8192
 
 
 class Message(BaseModel):
@@ -44,7 +45,14 @@ class Message(BaseModel):
 class Completion(BaseModel):
     model: str
     messages: list[Message] = Field(min_length=1, max_length=64)
-    max_tokens: int = Field(default=4096, ge=1, le=8192)
+    # Larger requests are served at the maximum instead of refused: a caller's
+    # budget is a ceiling, and an acta that hits it is split, not lost.
+    max_tokens: int = Field(default=4096, ge=1)
+
+    @field_validator("max_tokens")
+    @classmethod
+    def at_most_the_maximum(cls, value):
+        return min(value, MAX_TOKENS)
     temperature: float = 0
     stream: bool = False
 

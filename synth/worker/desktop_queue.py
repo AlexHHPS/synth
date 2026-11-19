@@ -14,6 +14,19 @@ import sqlite3
 import time
 from uuid import UUID, uuid4
 
+from .media import evidence_files, VIDEO_FORMATS, MAX_VIDEO_BYTES
+
+# Failures that usually clear by themselves: the service or the network was
+# briefly unavailable, or a model did not answer in time. The task runs again
+# after these waits before anyone has to press «Reintentar».
+RETRY_DELAYS_S = (20, 90, 300)
+TRANSIENT_PREFIXES = ("api_unavailable", "api_http_5", "api_http_429", "api_http_408", "qwen_asr_timeout",
+                      "speaker_session_timeout", "auth_unavailable")
+
+
+def transient(code):
+    return isinstance(code, str) and code.startswith(TRANSIENT_PREFIXES)
+
 
 class QueueError(ValueError):
     pass
@@ -47,6 +60,8 @@ class DesktopQueue:
                 result TEXT
             );
         """)
+        if "retry_at" not in {row[1] for row in self.db.execute("PRAGMA table_info(desktop_tasks)")}:
+            self.db.execute("ALTER TABLE desktop_tasks ADD COLUMN retry_at REAL")
 
     def close(self):
         self.db.close()
@@ -112,6 +127,8 @@ class DesktopQueue:
                         raise QueueError("capture_idempotency_conflict")
                     return self.decode(old)
         descriptors = {}
+        folders = set()
+        video_import = False
         files_seen = set()
         for kind, filename in sorted(sources.items()):
             if not isinstance(filename, (str, Path)):
@@ -130,12 +147,24 @@ class DesktopQueue:
             if identity in files_seen:
                 raise QueueError("capture_sources_share_file")
             files_seen.add(identity)
-            if path.suffix.lower() not in {".wav", ".mp4", ".m4a", ".flac", ".mp3", ".ogg", ".opus", ".webm"}:
+            folder = path.parent.parent if path.parent.name == "sources" else path.parent
+            folders.add(folder)
+            if kind == "import" and path.stem == "video" and folder.name == f"media-{capture_id}":
+                if path.suffix.lower() not in VIDEO_FORMATS or stat.st_size > MAX_VIDEO_BYTES:
+                    raise QueueError("media_video_invalid")
+                video_import = True
+            elif path.suffix.lower() not in {".wav", ".mp4", ".m4a", ".flac", ".mp3", ".ogg", ".opus", ".webm"}:
                 raise QueueError("capture_file_invalid")
             with path.open("rb") as stream:
                 digest = hashlib.file_digest(stream, "sha256").hexdigest()
             descriptors[kind] = {"path": str(path), "sha256": digest, "bytes": path.stat().st_size}
         metadata = {"sources": descriptors, "title": title.strip(), "folder_id": folder_id, "consent_confirmed": True}
+        if len(folders) == 1:
+            media = evidence_files(next(iter(folders)))
+            if media:
+                metadata["media"] = media
+        if video_import:
+            metadata["video_import"] = True
         if owner_id is not None:
             metadata["owner_id"] = owner_id
         if capture_id is not None:
@@ -193,7 +222,7 @@ class DesktopQueue:
             self.db.execute("UPDATE desktop_tasks SET state=CASE WHEN state='cancel_requested' THEN 'cancelled' ELSE 'queued' END,lease_token=NULL,lease_until=NULL,epoch=epoch+1,updated_at=? WHERE state IN ('running','cancel_requested') AND lease_until<=?", (now, now))
             if self.db.execute("SELECT 1 FROM desktop_tasks WHERE state IN ('running','cancel_requested')").fetchone():
                 return None
-            row = self.db.execute("SELECT id FROM desktop_tasks WHERE state='queued' ORDER BY created_at,rowid LIMIT 1").fetchone()
+            row = self.db.execute("SELECT id FROM desktop_tasks WHERE state='queued' AND COALESCE(retry_at,0)<=? ORDER BY created_at,rowid LIMIT 1", (now,)).fetchone()
             if row is None:
                 return None
             token = str(uuid4())
@@ -216,7 +245,7 @@ class DesktopQueue:
             return row["state"] != "cancel_requested"
 
     def checkpoint(self, identifier, token, stage, descriptor, now=None):
-        if stage not in {"consolidated", "normalized", "bleed", "acoustic", "asr", "asr_microphone", "asr_system", "asr_import",
+        if stage not in {"media_observed", "media_delivery", "consolidated", "normalized", "bleed", "acoustic", "asr", "asr_microphone", "asr_system", "asr_import",
                          "diarization", "canonical", "identified", "uploaded", "voice_plan", "voice_applied"}:
             raise QueueError("checkpoint_stage_invalid")
         now = time.time() if now is None else now
@@ -236,15 +265,19 @@ class DesktopQueue:
             raise QueueError("error_code_invalid")
         with self.transaction():
             row = self.owned(identifier, token, now)
+            retry_at = None
             if row["state"] == "cancel_requested":
                 state, result, error_code = "cancelled", None, None
+            elif transient(error_code) and row["attempts"] <= len(RETRY_DELAYS_S):
+                # Checkpoints are kept: the next attempt resumes where this one stopped.
+                state, result, retry_at = "queued", None, now + RETRY_DELAYS_S[row["attempts"] - 1]
             else:
                 state = "failed" if error_code else "succeeded"
                 if error_code:
                     result = None
                 if state == "succeeded" and not isinstance(result, dict):
                     raise QueueError("task_result_missing")
-            self.db.execute("UPDATE desktop_tasks SET state=?,result=?,error_code=?,lease_token=NULL,lease_until=NULL,updated_at=? WHERE id=?", (state, self.encode(result) if result is not None else None, error_code, now, identifier))
+            self.db.execute("UPDATE desktop_tasks SET state=?,result=?,error_code=?,lease_token=NULL,lease_until=NULL,retry_at=?,updated_at=? WHERE id=?", (state, self.encode(result) if result is not None else None, error_code, retry_at, now, identifier))
             return self.get(identifier)
 
     def list_owned(self, owner_id, limit=100):
@@ -265,7 +298,8 @@ class DesktopQueue:
     def retry(self, identifier):
         with self.transaction():
             row = self.get(identifier)
-            if row["state"] != "failed":
+            # «Reintentar» also skips the wait of a task already scheduled to try again.
+            if row["state"] != "failed" and not (row["state"] == "queued" and row["retry_at"]):
                 raise QueueError("task_not_failed")
-            self.db.execute("UPDATE desktop_tasks SET state='queued',error_code=NULL,updated_at=? WHERE id=?", (time.time(), identifier))
+            self.db.execute("UPDATE desktop_tasks SET state='queued',error_code=NULL,retry_at=NULL,updated_at=? WHERE id=?", (time.time(), identifier))
             return self.get(identifier)

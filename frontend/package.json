@@ -1,6 +1,6 @@
 {
   "name": "synth",
-  "version": "0.5.0",
+  "version": "0.6.11",
   "private": true,
   "main": "electron/main.js",
   "scripts": {
@@ -75,7 +75,7 @@
     "framer-motion": "^11.15.0",
     "lodash": "^4.17.21",
     "lucide-react": "^0.469.0",
-    "next": "^14.2.25",
+    "next": "^15.5.28",
     "radix-ui": "^1.4.3",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
@@ -85,13 +85,13 @@
     "sonner": "^2.0.7",
     "tailwind-merge": "^3.3.1",
     "tailwindcss-animate": "^1.0.7",
-    "zod": "^3.25.71"
+    "zod": "^4.6.6"
   },
   "pnpm": {
     "overrides": {
       "prosemirror-model": "1.25.3",
       "prosemirror-state": "1.4.3",
-      "prosemirror-view": "1.41.3",
+      "prosemirror-view": "1.42.6",
       "prosemirror-transform": "1.10.4",
       "prosemirror-tables": "1.8.1"
     }
@@ -114,5 +114,5 @@
     "typescript": "^5.7.2",
     "wait-on": "^7.2.0"
   },
-  "packageManager": "pnpm@10.17.1"
+  "packageManager": "pnpm@10.28.2"
 }

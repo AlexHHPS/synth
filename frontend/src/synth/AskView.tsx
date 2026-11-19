@@ -25,16 +25,21 @@ export function AskView({ folders, onOpenMeeting }: AskViewProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const [retry, setRetry] = useState(0);
   useEffect(() => {
     if (!pending) return;
     const timer = setTimeout(async () => {
       try {
         const next = await request<QuestionResult>('GET', `/v1/questions/${pending.id}`);
+        setError('');
         setResults(old => old.map(r => r.id === next.id ? next : r));
-      } catch (e) { setError(message(e)); }
-    }, 1500);
+      } catch (e) {
+        // One failed check must not leave the question "searching" for ever.
+        setError(message(e)); setRetry(n => n + 1);
+      }
+    }, retry ? 4000 : 1500);
     return () => clearTimeout(timer);
-  }, [pending]);
+  }, [pending, retry]);
 
   async function ask(text: string) {
     if (text.trim().length < 3) return;
@@ -50,7 +55,7 @@ export function AskView({ folders, onOpenMeeting }: AskViewProps) {
       <p className="notebook-meeting-meta"><span>Respuestas con sus fuentes, solo de las reuniones que puedes leer.</span></p></header>
     <form className="notebook-ask" onSubmit={e => { e.preventDefault(); void ask(question); }}>
       <textarea className="voice-textarea" aria-label="Tu pregunta" rows={2} maxLength={500} value={question} placeholder="¿Qué se decidió sobre…?"
-        onChange={e => setQuestion(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void ask(question); } }} />
+        onChange={e => setQuestion(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!busy) void ask(question); } }} />
       <div className="notebook-ask-row">
         <select className="voice-input" aria-label="Dónde buscar" value={folderId} onChange={e => setFolderId(e.target.value)}>
           <option value="">Todas mis reuniones</option>{folders.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}

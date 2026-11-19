@@ -16,13 +16,16 @@ import './theme.css';
 import './voice.css';
 import './notebook.css';
 import './meeting-editor.css';
+import './media-import.css';
 import { MeetingDetail } from './MeetingDetail';
 import { GlossaryView, MyTasks } from './GlossaryView';
 import { AskView } from './AskView';
 import { FolderManagement } from './FolderManagement';
 import { OperationsView } from './OperationsView';
 import { CaptureView } from './CaptureView';
+import { LibraryVideoImport } from './MediaImport';
 import { IntegrationsView } from './IntegrationsView';
+import { RecoveredCaptures } from './RecoveredCaptures';
 import { MeetingDetection } from './MeetingDetection';
 import { VoiceOnboarding } from './VoiceOnboarding';
 import { CorporateSession, SessionEmail } from './CorporateSession';
@@ -31,11 +34,7 @@ import { SettingsView } from './SettingsView';
 import { CalendarHome, CalendarPreparation } from './CalendarHome';
 import { setupCompleted } from './setup';
 import { About } from '@/components/About';
-
-const stateLabels: Record<string, string> = {
-  capturing: 'Captura', queued: 'En cola', transcribing: 'Transcribiendo', processing: 'Procesando',
-  completed: 'Acta disponible', ready: 'Disponible', failed: 'Requiere atención', cancelled: 'Cancelada',
-};
+import { MEETING_PAGE_SIZE, MeetingTimeline } from './MeetingTimeline';
 
 export function VoiceWorkspace() {
   return <CorporateSession><VoiceWorkspaceContent /></CorporateSession>;
@@ -60,6 +59,12 @@ function VoiceWorkspaceContent() {
   const [detailRefresh, setDetailRefresh] = useState(0);
   const [view, setView] = useState<'home' | 'library' | 'operations' | 'capture' | 'integrations' | 'voice' | 'tasks' | 'glossary' | 'ask' | 'settings' | 'about'>('home');
   const [prepared, setPrepared] = useState<CalendarPreparation | null>(null);
+  const [draft, setDraft] = useState(0);
+  const openCapture = (pack: CalendarPreparation | null) => {
+    // A new note starts blank; a recording in progress keeps its screen.
+    void invoke<boolean>('is_recording').catch(() => false).then(active => { if (!active) setDraft(old => old + 1); });
+    setPrepared(pack); setView('capture'); setSelected(null);
+  };
   const email = useContext(SessionEmail);
   const [setupDone, setSetupDone] = useState<boolean | null>(null);
   useEffect(() => { void setupCompleted().then(setSetupDone).catch(() => setSetupDone(true)); }, []);
@@ -91,7 +96,7 @@ function VoiceWorkspaceContent() {
     try {
       const [me, fs, library] = await Promise.all([
         request<{ name: string }>('GET', '/v1/me'), request<Page<Folder>>('GET', '/v1/folders'),
-        request<Page<Meeting>>('GET', '/v1/library?limit=100'),
+        request<Page<Meeting>>('GET', `/v1/library?limit=${MEETING_PAGE_SIZE}&newest=true`),
       ]);
       if (!mounted.current || run !== generation.current) return;
       setActor(me.name); setFolders(fs.items); setMeetings(library.items); setCursor(library.next_cursor ?? null);
@@ -105,7 +110,7 @@ function VoiceWorkspaceContent() {
     const run = generation.current;
     setLoading(true); setError('');
     try {
-      const page = await request<Page<Meeting>>('GET', `/v1/library?limit=100&after=${cursor}`);
+      const page = await request<Page<Meeting>>('GET', `/v1/library?limit=${MEETING_PAGE_SIZE}&newest=true&after=${encodeURIComponent(cursor)}`);
       if (!mounted.current || run !== generation.current) return;
       setMeetings(old => [...old, ...page.items.filter(item => !old.some(m => m.id === item.id))]);
       setCursor(page.next_cursor ?? null);
@@ -146,7 +151,7 @@ function VoiceWorkspaceContent() {
     <aside className="voice-sidebar" aria-label={`Navegación de ${brand.name}`}>
       <div className="voice-brand"><Image src={brand.logo} width={28} height={28} alt="" /><div><strong>{brand.name}</strong><span>{brand.tagline}</span></div></div>
       <div className="voice-sidebar-body">
-        <button type="button" className="voice-capture-link" onClick={() => { setPrepared(null); setView('capture'); setSelected(null); }}><Mic size={16} /> Nueva nota <ChevronRight size={14} /></button>
+        <button type="button" className="voice-capture-link" onClick={() => openCapture(null)}><Mic size={16} /> Nueva nota <ChevronRight size={14} /></button>
         <p className="voice-nav-label">TU ESPACIO</p>
         <button type="button" className={`voice-nav-row ${view === 'home' ? 'is-selected' : ''}`} onClick={() => { setView('home'); setSelected(null); }}><Home size={16} /> Inicio</button>
         <button type="button" className={`voice-nav-row ${view === 'library' && !folder ? 'is-selected' : ''}`} onClick={() => chooseFolder(null)}><Library size={16} /> Biblioteca</button>
@@ -157,7 +162,7 @@ function VoiceWorkspaceContent() {
         <button type="button" className={`voice-nav-row ${view === 'integrations' ? 'is-selected' : ''}`} onClick={() => { setView('integrations'); setSelected(null); }}><Plug size={16} /> Integraciones</button>
         <button type="button" className={`voice-nav-row ${view === 'voice' ? 'is-selected' : ''}`} onClick={() => { setView('voice'); setSelected(null); }}><Mic size={16} /> Mi perfil de voz</button>
         <div className="voice-nav-label voice-folder-heading">CARPETAS <Button variant="ghost" size="xs" aria-label="Crear carpeta" onClick={() => setNewFolder(!newFolder)}><Plus size={14} /></Button></div>
-        {folders.map(f => <button type="button" key={f.id} className={`voice-nav-row ${folder === f.id ? 'is-selected' : ''}`} onClick={() => chooseFolder(f.id)}><FolderClosed size={16} /><span>{f.name}</span></button>)}
+        {folders.map(f => <button type="button" key={f.id} className={`voice-nav-row ${view === 'library' && folder === f.id ? 'is-selected' : ''}`} onClick={() => chooseFolder(f.id)}><FolderClosed size={16} /><span>{f.name}</span></button>)}
         {newFolder && <form className="voice-folder-form" onSubmit={createFolder}><FormField label="Nueva carpeta" hint="Privada por defecto."><Field.Control className="voice-input" value={folderName} onChange={e => setFolderName(e.target.value)} maxLength={200} autoFocus /></FormField><div className="flex gap-2"><Button loading={creating} type="submit" size="sm" disabled={!folderName.trim()}>Crear</Button><Button type="button" variant="ghost" size="sm" onClick={() => setNewFolder(false)}>Cancelar</Button></div></form>}
       </div>
       <button type="button" className={`voice-nav-row voice-settings-link ${view === 'settings' ? 'is-selected' : ''}`} onClick={() => { setView('settings'); setSelected(null); }}><Settings2 size={16} /> Ajustes</button>
@@ -167,18 +172,27 @@ function VoiceWorkspaceContent() {
     <main className="voice-main" tabIndex={0} aria-label={`Contenido de ${brand.name}`}>
       {(view === 'capture' || (view === 'library' && selected)) && <div className="meeting-home"><Button variant="ghost" aria-label="Volver a la biblioteca" onClick={() => { setView('home'); setSelected(null); }}><Home size={18} /></Button><span>{brand.name}</span></div>}
       <header className="voice-topbar"><span>{brand.name} <ChevronRight size={12} /> {view === 'about' ? 'Acerca de' : view === 'settings' ? 'Ajustes' : view === 'voice' ? 'Perfil de voz' : view === 'ask' ? 'Preguntar' : view === 'tasks' ? 'Mis tareas' : view === 'glossary' ? 'Glosario' : view === 'integrations' ? 'Integraciones' : view === 'capture' ? 'Nueva nota' : view === 'operations' ? 'Procesamiento' : selected ? 'Reunión' : view === 'home' ? 'Inicio' : folderTitle}</span><Button variant="ghost" size="xs" loading={loading} onClick={() => { setDetailRefresh(old => old + 1); void refresh(); }}><RefreshCw size={14} /> Actualizar</Button></header>
-      <MeetingDetection showSettings={view === 'settings'} onPrepare={() => { setPrepared(null); setView('capture'); setSelected(null); }} />
+      <MeetingDetection showSettings={view === 'settings'} onPrepare={() => openCapture(null)} />
+      {view !== 'capture' && <RecoveredCaptures onQueued={showProcessing} />}
       {error && <div className="voice-alert" role="alert">{error}</div>}
-      {view === 'about' ? <div className="voice-library"><About /></div> : view === 'home' ? <CalendarHome folders={folders} meetings={meetings} loading={loading} refreshToken={detailRefresh} onRefresh={() => void refresh()} onOpen={id => { setView('library'); setSelected(id); }} onConnect={() => setView('integrations')} onPrepare={pack => { setPrepared(pack); setView('capture'); setSelected(null); }} /> : view === 'settings' ? <SettingsView email={email} onOpenVoice={() => setView('voice')} /> : view === 'voice' ? <VoiceOnboarding /> : view === 'ask' ? <AskView folders={folders} onOpenMeeting={meetingId => { setView('library'); setSelected(meetingId); }} /> : view === 'tasks' ? <MyTasks onOpenMeeting={meetingId => { setView('library'); setSelected(meetingId); }} /> : view === 'glossary' ? <GlossaryView /> : view === 'integrations' ? <IntegrationsView folders={folders} refreshToken={detailRefresh} onCreateFolder={() => { chooseFolder(null); setNewFolder(true); }} /> : view === 'capture' ? <CaptureView folders={folders} prepared={prepared} onQueued={showProcessing} /> : view === 'operations' ? <OperationsView folders={folders} meetings={meetings} refreshToken={detailRefresh} onOpen={id => { setView('library'); setSelected(id); void refresh(); }} /> : selected ? <MeetingDetail key={selected} id={selected} refreshToken={detailRefresh} folders={folders} onBack={() => setSelected(null)} onChanged={refresh} /> : <div className="voice-library">
-        <div className="voice-page-heading"><div><p className="voice-eyebrow">REUNIONES Y CONOCIMIENTO</p><h1>{folderTitle}</h1><p>Notas, conversaciones y decisiones, con sus fuentes.</p></div>{currentFolder?.can_manage ? <Button variant="outline" size="sm" onClick={() => setManageFolder(!manageFolder)}>{manageFolder ? 'Cerrar ajustes' : 'Gestionar carpeta'}</Button> : <LockKeyhole size={22} className="text-muted-foreground" />}</div>
+      {view === 'about' ? <div className="voice-library"><About /></div> : view === 'home' ? <CalendarHome folders={folders} meetings={meetings} loading={loading} refreshToken={detailRefresh} onRefresh={() => void refresh()} onOpen={id => { setView('library'); setSelected(id); }} onConnect={() => setView('integrations')} onPrepare={openCapture} onLoadMore={cursor ? more : undefined} /> : view === 'settings' ? <SettingsView email={email} onOpenVoice={() => setView('voice')} /> : view === 'voice' ? <VoiceOnboarding /> : view === 'ask' ? <AskView folders={folders} onOpenMeeting={meetingId => { setView('library'); setSelected(meetingId); }} /> : view === 'tasks' ? <MyTasks onOpenMeeting={meetingId => { setView('library'); setSelected(meetingId); }} /> : view === 'glossary' ? <GlossaryView /> : view === 'integrations' ? <IntegrationsView folders={folders} refreshToken={detailRefresh} onCreateFolder={() => { chooseFolder(null); setNewFolder(true); }} /> : view === 'capture' ? <CaptureView key={draft} folders={folders} prepared={prepared} onQueued={showProcessing} /> : view === 'operations' ? <OperationsView folders={folders} meetings={meetings} refreshToken={detailRefresh} onOpen={id => { setView('library'); setSelected(id); void refresh(); }} /> : selected ? <MeetingDetail key={selected} id={selected} refreshToken={detailRefresh} folders={folders} onBack={() => setSelected(null)} onChanged={refresh} /> : <div className="voice-library">
+        <div className="voice-page-heading voice-library-heading">
+          <h1>{folderTitle}</h1>
+          <div className="voice-library-actions">
+            {currentFolder?.can_manage && <Button variant="outline" size="sm" onClick={() => setManageFolder(!manageFolder)}>
+              {manageFolder ? 'Cerrar ajustes' : 'Gestionar carpeta'}
+            </Button>}
+            <LibraryVideoImport key={folder ?? 'all'} folders={folders} folderId={folder ?? ''} onQueued={showProcessing} />
+          </div>
+        </div>
         {manageFolder && currentFolder?.can_manage && <FolderManagement key={currentFolder.id} folder={currentFolder} onChanged={refresh} onDeleted={() => { chooseFolder(null); void refresh(); }} />}
         <form className="voice-search" role="search" onSubmit={search}><Search size={17} /><input aria-label="Buscar en transcripciones" placeholder="Buscar en las conversaciones…" value={query} maxLength={500} onChange={e => { setQuery(e.target.value); resetSearch(); }} /><Button type="submit" variant="outline" size="sm" loading={searching}>Buscar</Button></form>
         {hits !== null ? <><div className="voice-section-label">{hits.length} resultados <Button variant="ghost" size="xs" onClick={() => { resetSearch(); setQuery(''); }}>Limpiar búsqueda</Button></div>{hits.map(hit => <button type="button" className="voice-result" key={hit.meeting_id} onClick={() => setSelected(hit.meeting_id)}><strong>{meetings.find(m => m.id === hit.meeting_id)?.title ?? 'Reunión accesible'}</strong>{hit.evidence.map(e => <p key={e.segment_id}>{e.quote}</p>)}<small>Transcripción v{hit.transcript_version}</small></button>)}{!hits.length && <Empty title="No hay coincidencias" detail="Prueba otra palabra o consulta otra carpeta." />}</> : <>
-          <div className="voice-section-label">{visible.length} reuniones cargadas</div>
-          {!loading && !visible.length && <Empty title="Tu biblioteca empieza aquí" detail="Graba una reunión o guarda una conversación en esta carpeta." />}
+          {!loading && !cursor && !visible.length && <Empty title="Tu biblioteca empieza aquí" detail="Graba una reunión o guarda una conversación en esta carpeta." />}
           {loading && !meetings.length && <p role="status" className="text-muted-foreground">Cargando tu biblioteca…</p>}
-          <div className="voice-meeting-list">{visible.map(meeting => <button type="button" className="voice-meeting-row" key={meeting.id} onClick={() => setSelected(meeting.id)}><div className="voice-row-icon"><FileText size={18} /></div><div className="voice-row-content"><strong>{meeting.title}</strong><small>{meeting.created_at ? `${new Date(meeting.created_at).toLocaleDateString('es-ES', { day: 'numeric', month: 'short' })} · ` : ''}{folders.find(f => f.id === meeting.folder_id)?.name ?? 'Privada · Sin carpeta'}</small></div><span className="voice-state" data-state={meeting.state}>{stateLabels[meeting.state] ?? meeting.state}</span><ChevronRight size={16} /></button>)}</div>
-          {cursor && <Button variant="outline" loading={loading} onClick={() => void more()}>Cargar más reuniones</Button>}
+          <MeetingTimeline meetings={visible} folders={folders} onOpen={setSelected} />
+          {cursor && <Button className="voice-meeting-more" variant="outline" size="sm" loading={loading}
+            onClick={more}>Cargar más reuniones</Button>}
         </>}
       </div>}
     </main>

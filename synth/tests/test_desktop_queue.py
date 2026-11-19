@@ -57,6 +57,29 @@ class QueueRecoveryTests(unittest.TestCase):
         result = self.queue.finish(first["id"], recovered["lease_token"], {"meeting_id": "correct"}, now=112)
         self.assertEqual(result["state"], "succeeded")
 
+    def test_a_passing_failure_runs_again_by_itself_and_keeps_its_checkpoints(self):
+        task = self.enqueue()
+        claimed = self.queue.claim(now=100)
+        self.queue.checkpoint(task["id"], claimed["lease_token"], "asr", {"sha256": "kept"}, now=101)
+        waiting = self.queue.finish(task["id"], claimed["lease_token"], error_code="api_unavailable", now=102)
+        self.assertEqual((waiting["state"], waiting["error_code"]), ("queued", "api_unavailable"))
+        self.assertIsNone(self.queue.claim(now=103))
+        again = self.queue.claim(now=102 + 20)
+        self.assertEqual((again["attempts"], again["checkpoints"]["asr"]["sha256"]), (2, "kept"))
+
+    def test_a_lasting_failure_stops_and_waits_for_the_person(self):
+        task = self.enqueue()
+        claimed = self.queue.claim(now=100)
+        self.assertEqual(self.queue.finish(task["id"], claimed["lease_token"], error_code="capture_audio_missing", now=101)["state"], "failed")
+        moment = 200
+        retried = self.queue.retry(task["id"])
+        # The manual retry was attempt 2; attempts 3 and 4 are automatic, then it stops.
+        for _ in range(3):
+            claimed = self.queue.claim(now=moment)
+            final = self.queue.finish(task["id"], claimed["lease_token"], error_code="api_http_503", now=moment)
+            moment += 1000
+        self.assertEqual((retried["state"], final["state"]), ("queued", "failed"))
+
     def test_single_active_lease_across_connections(self):
         self.enqueue()
         second_file = self.capture / "second.wav"
@@ -84,7 +107,7 @@ class QueueRecoveryTests(unittest.TestCase):
         task = self.enqueue()
         owner = self.queue.claim(now=100)
         self.queue.checkpoint(task["id"], owner["lease_token"], "canonical", {"path": "transcript.json"}, now=101)
-        self.queue.finish(task["id"], owner["lease_token"], error_code="api_unavailable", now=102)
+        self.queue.finish(task["id"], owner["lease_token"], error_code="canonical_transcript_invalid", now=102)
         self.queue.retry(task["id"])
         recovered = self.queue.claim(now=103)
         self.assertEqual(recovered["checkpoints"]["canonical"]["path"], "transcript.json")
@@ -114,7 +137,7 @@ class QueueRecoveryTests(unittest.TestCase):
     def test_failure_discards_success_result(self):
         task = self.enqueue()
         owner = self.queue.claim(now=100)
-        result = self.queue.finish(task["id"], owner["lease_token"], result={"document_id": "unconfirmed"}, error_code="api_unavailable", now=101)
+        result = self.queue.finish(task["id"], owner["lease_token"], result={"document_id": "unconfirmed"}, error_code="canonical_transcript_invalid", now=101)
         self.assertEqual(result["state"], "failed")
         self.assertIsNone(result["result"])
 

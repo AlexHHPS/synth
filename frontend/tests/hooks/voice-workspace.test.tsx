@@ -41,7 +41,7 @@ beforeEach(() => {
   handle = async ({ method, path }) => {
     if (path === '/v1/me') return { name: 'Synthetic owner' };
     if (path === '/v1/folders') return { items: [] };
-    if (path === '/v1/library?limit=100') return { items: [{ id: 'initial', title: 'Initial meeting', folder_id: null, state: 'ready' }], next_cursor: 'page-2' };
+    if (path === '/v1/library?limit=100&newest=true') return { items: [{ id: 'initial', title: 'Initial meeting', folder_id: null, state: 'ready' }], next_cursor: 'page-2' };
     if (method === 'GET' && path === '/v1/meetings/A') return { id: 'A', title: 'Meeting A', notes: 'Original notes', revision: 1, state: 'ready', folder_id: null };
     if (path.endsWith('/transcript')) return { version: 1, content: { segments: [], duration_ms: 1, language: 'es' } };
     throw new Error('synthetic request: ' + path);
@@ -135,7 +135,7 @@ describe('Synth workspace request and draft ownership', () => {
     let reads = 0;
     handle = call => {
       if (call.path.includes('&after=')) return page.promise;
-      if (call.path === '/v1/library?limit=100' && ++reads > 1) return refreshed.promise;
+      if (call.path === '/v1/library?limit=100&newest=true' && ++reads > 1) return refreshed.promise;
       return base(call);
     };
     await workspace();

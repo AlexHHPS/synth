@@ -14,12 +14,12 @@ def validate_sources(sources, capture_id, identity, capture_root):
     for filename in sources.values():
         if not isinstance(filename, (str, Path)):
             raise QueueError("capture_file_invalid")
-        path = Path(filename).resolve(strict=True)
+        path = Path(filename).resolve()
         if not path.is_relative_to(root):
             raise QueueError("capture_path_not_owned")
         folder = path.parent.parent if path.parent.name == "sources" else path.parent
         folders.add(folder)
-        if (folder/"sources/progress.json").exists():
+        if (folder/"sources/progress.json").exists() or folder.name.startswith("media-"):
             live.append(folder)
     if not live:
         return  # Legacy archives predate the incremental source protocol.

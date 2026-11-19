@@ -85,7 +85,9 @@ class SpeakerSessionTests(unittest.TestCase):
         self.binary.write_text('#!'+sys.executable+'\nimport json,time\n'
             'print(json.dumps({"ready":True,"protocol_version":1,"model_loads":1,"revision":"test"}),flush=True)\n'
             'time.sleep(60)\n')
-        session = self.session(timeout=.2)
+        # Start with a normal budget (interpreter start-up varies by machine); only the stalled request is short.
+        session = self.session()
+        session.timeout = .2
         started = time.monotonic()
         with self.assertRaisesRegex(ValueError, 'speaker_session_timeout'):
             session.project([[1.]+[0.]*255 for _ in range(128)])

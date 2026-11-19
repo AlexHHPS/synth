@@ -111,11 +111,14 @@ def transcribe(wav, working_directory, source_id="import", model=MODEL, lock_fd=
     return transcript, raw
 
 
-def normalize_audio(input_path, output_path, lock_fd=None):
+def normalize_audio(input_path, output_path, lock_fd=None, *, input_format=None):
     # Originals are read only. Caller registers output as temporary before conversion.
+    format_args = ["-f", input_format] if input_format else []
+    track_args = ["-map", "0:a:0"] if input_format else []
     try:
         result = run_process(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
-                                 "-y", "-i", str(input_path), "-ac", "1", "-ar", "16000",
+                                 "-y", "-protocol_whitelist", "file,pipe", *format_args, "-i", str(input_path), *track_args,
+                                 "-ac", "1", "-ar", "16000",
                                  "-c:a", "pcm_s16le", str(output_path)], capture_output=True, timeout=120,
                                  pass_fds=() if lock_fd is None else (lock_fd,))
     except subprocess.TimeoutExpired:

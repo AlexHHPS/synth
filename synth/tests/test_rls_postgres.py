@@ -273,7 +273,7 @@ class RowSecurityTests(unittest.TestCase):
                 db.execute("SET search_path=" + schema)
                 db.execute(SCHEMA_SQL.read_text())
                 db.execute(SCHEMA_SQL.read_text())
-                self.assertEqual(db.execute("SELECT max(version) FROM schema_versions").fetchone()[0], 15)
+                self.assertEqual(db.execute("SELECT max(version) FROM schema_versions").fetchone()[0], 17)
         finally:
             self.owner.execute(f"DROP SCHEMA {schema} CASCADE")
 

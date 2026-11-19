@@ -10,15 +10,22 @@ const states: Record<string, string> = {
   cancelled: 'Cancelado', failed: 'Requiere atención', succeeded: 'Acta disponible', unavailable: 'Estado por comprobar',
 };
 const stages: Record<string, string> = {
-  queued: 'Esperando turno', normalized: 'Audio preparado', asr: 'Transcripción completada',
+  queued: 'Esperando turno', media_observed: 'Material de apoyo analizado', normalized: 'Audio preparado', asr: 'Transcripción completada',
   diarization: 'Voces separadas', canonical: 'Transcripción preparada', identified: 'Reconocimiento de voces completado', uploaded: 'Generación del acta',
   confirming_voices: 'Guardando las voces confirmadas',
 };
 const errors: Record<string, string> = {
+  gateway_unavailable_or_invalid: 'El servicio de redacción no respondió. La transcripción se conserva; se reintenta sola y, si no, puedes reintentar.',
+  gateway_request_rejected: 'El servicio de redacción rechazó la petición. La transcripción se conserva; se reintenta con otro método.',
+  attempts_exhausted: 'El acta ha fallado varias veces seguidas. La transcripción se conserva; reintenta más tarde.',
   generation_context_changed: 'La carpeta o sus permisos han cambiado. La transcripción se conserva; reintenta el acta con el contexto actual.',
   api_unavailable: 'No se puede conectar con el servicio de reuniones. Comprueba que está iniciado.',
   document_job_failed: 'No se pudo generar el acta. Puedes reintentar sin volver a transcribir.',
   document_wait_timeout: 'La generación del acta tarda más de lo esperado. Puedes reintentar para consultar el resultado.',
+  media_video_invalid: 'No se ha podido leer el vídeo. Selecciona una grabación válida.',
+  media_video_audio_missing: 'El vídeo necesita una pista de audio con voz para generar el acta.',
+  media_video_duration_limit: 'El vídeo supera las cuatro horas admitidas.',
+  capture_media_changed: 'Un archivo de contexto cambió después de importarlo.',
   asr_failed: 'No se pudo transcribir el audio. Revisa la grabación antes de reintentar.',
   host_pipeline_failed: 'El procesamiento local se ha interrumpido. La captura y el texto guardado se conservan; reintenta para continuar.',
   audio_setup_not_ready: 'Espera a que termine la preparación automática del audio y reintenta el envío.',
@@ -87,7 +94,7 @@ export function OperationsView({ refreshToken, onOpen, folders = [], meetings = 
     <div className="voice-page-heading"><div><p className="voice-eyebrow">TU SISTEMA</p><h1>Procesamiento</h1><p>Consulta el progreso y recupera conversaciones interrumpidas.</p></div><Activity size={22} /></div>
     <div className="voice-system-summary"><div><strong>Audio en este Mac</strong><p>Transcripción y separación de voces locales. El acta usa OmniRoute y su proveedor configurado.</p></div><span className="voice-state">{worker === 'idle' ? 'Disponible' : worker === 'running' ? 'Trabajando' : worker === 'audio_in_use' ? 'Audio en uso' : worker === 'preparing_audio' ? 'Preparando audio' : worker ? 'Recuperando servicio' : 'Conectando…'}</span></div>
     <div className="voice-processing-counts"><span><LoaderCircle size={14} /> {counts.active} en curso</span><span><CircleCheck size={14} /> {counts.ready} disponibles</span>{counts.failed > 0 && <span>{counts.failed} requieren atención</span>}</div>
-    <details className="voice-processing-info"><summary>Audio y perfiles de voz</summary><p className="voice-notice">Si has creado tu perfil, las transcripciones muestran coincidencias locales de piloto. La identificación de empleados requiere completar la calibración. El audio temporal se conserva como máximo 24 horas.</p></details>
+    <details className="voice-processing-info"><summary>Audio y perfiles de voz</summary><p className="voice-notice">Si has creado tu perfil, las transcripciones muestran coincidencias locales de piloto. La identificación de empleados requiere completar la calibración. El audio temporal se conserva como máximo 24 horas; una captura todavía sin transcribir, hasta 7 días.</p></details>
     {error && <div role="alert" className="voice-alert">{error}</div>}
     {loading && <p role="status">Consultando el procesamiento…</p>}
     {!loading && !tasks.length && !error && <div className="voice-empty"><CircleCheck size={26} /><h2>No hay trabajos pendientes</h2><p>Las grabaciones aparecerán aquí cuando se envíen a procesar.</p></div>}
@@ -99,10 +106,11 @@ export function OperationsView({ refreshToken, onOpen, folders = [], meetings = 
       return <article key={task.id} className="voice-processing-task" data-state={task.state}>
       <div className="voice-processing-heading"><div className="voice-processing-identity"><div className="voice-row-icon"><FileAudio size={19} /></div><div><h2>{title}</h2><div className="voice-processing-meta"><span><CalendarDays size={13} /><time dateTime={date.toISOString()}>{date.toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' })} · {date.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}</time></span><span><FolderClosed size={13} />{folderName || 'Privada · Sin carpeta'}</span></div></div></div><span className="voice-state" data-state={task.state}>{states[task.state] ?? 'Estado desconocido'}</span></div>
       <p>{task.state === 'succeeded' ? 'Transcripción y acta guardadas en tu biblioteca.' : stages[task.stage] ?? 'Consultando etapa'}{task.transcript_version ? ` · Transcripción v${task.transcript_version}` : ''} · Intento {task.attempts}</p>
-      {task.error_code && <p className="voice-alert">{task.voice_confirmation_pending ? 'No se han podido guardar las voces confirmadas. La transcripción se conserva; reintenta para completar el guardado.' : errors[task.error_code] ?? 'El procesamiento se ha detenido. Comprueba el servicio y reintenta cuando esté disponible.'}</p>}
+      {task.error_code && task.state === 'queued' && <p className="voice-notice">Ha habido un problema pasajero. Se reintenta automáticamente en unos minutos; no hace falta que hagas nada.</p>}
+      {task.error_code && task.state !== 'queued' && <p className="voice-alert">{task.voice_confirmation_pending ? 'No se han podido guardar las voces confirmadas. La transcripción se conserva; reintenta para completar el guardado.' : errors[task.error_code] ?? 'El procesamiento se ha detenido. Comprueba el servicio y reintenta cuando esté disponible.'}</p>}
       <div className="flex flex-wrap gap-2">
         {task.meeting_id && <Button size="sm" variant="outline" onClick={() => onOpen(task.meeting_id!)}>Abrir reunión <ArrowUpRight size={14} /></Button>}
-        {task.state === 'failed' && <Button size="sm" variant="outline" loading={busy === task.id} disabled={busy !== null} onClick={() => void action(task, 'retry')}><RefreshCw size={14} /> Reintentar</Button>}
+        {(task.state === 'failed' || (task.state === 'queued' && task.error_code)) && <Button size="sm" variant="outline" loading={busy === task.id} disabled={busy !== null} onClick={() => void action(task, 'retry')}><RefreshCw size={14} /> {task.state === 'failed' ? 'Reintentar' : 'Reintentar ahora'}</Button>}
         {['queued', 'running'].includes(task.state) && <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => setConfirm(task.id)}>Detener</Button>}
       </div>
       {confirm === task.id && <div className="voice-processing-confirm"><p>¿Detener el procesamiento pendiente? Las actas ya generadas se conservan.</p><div className="flex gap-2"><Button size="sm" variant="outline" loading={busy === task.id} onClick={() => void action(task, 'cancel')}>Confirmar</Button><Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => setConfirm(null)}>Volver</Button></div></div>}

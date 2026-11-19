@@ -1,10 +1,11 @@
-"""Build a pinned, audio-only LGPL FFmpeg sidecar with corresponding source."""
+"""Build a pinned, LGPL FFmpeg sidecar with corresponding source."""
 import hashlib
 import json
 from pathlib import Path
 import shutil
 import subprocess
 import tarfile
+from tempfile import TemporaryDirectory
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -16,24 +17,25 @@ if not archive.exists():
     urllib.request.urlretrieve('https://ffmpeg.org/releases/ffmpeg-8.0.tar.xz', archive)
 if hashlib.file_digest(archive.open('rb'), 'sha256').hexdigest() != expected:
     raise ValueError('FFmpeg source checksum mismatch')
-source = RUNTIME / 'ffmpeg-8.0'
-if not source.exists():
-    with tarfile.open(archive) as handle:
-        handle.extractall(RUNTIME, filter='data')
 flags = ['--extra-cflags=-mmacosx-version-min=14.0', '--extra-ldflags=-mmacosx-version-min=14.0', '--disable-everything', '--disable-autodetect', '--disable-network',
          '--disable-doc', '--disable-debug', '--disable-ffplay', '--disable-ffprobe',
          '--enable-ffmpeg', '--enable-protocol=file,pipe',
          '--enable-demuxer=wav,aiff,flac,mp3,mov,matroska,ogg,aac',
-         '--enable-muxer=wav,flac,adts,mp4',
-         '--enable-decoder=pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,pcm_f64le,pcm_s16be,pcm_s24be,pcm_s32be,pcm_f32be,pcm_f64be,aac,alac,mp3,flac,opus,vorbis',
-         '--enable-encoder=pcm_s16le,aac,flac',
-         '--enable-parser=aac,mpegaudio,flac,opus,vorbis',
-         '--enable-filter=aresample,aformat,anull,volume', '--enable-swresample']
-subprocess.run(['./configure', *flags], cwd=source, check=True)
-subprocess.run(['make', '-j4'], cwd=source, check=True)
+         '--enable-muxer=wav,flac,adts,mp4,rawvideo,image2',
+         '--enable-decoder=pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le,pcm_f64le,pcm_s16be,pcm_s24be,pcm_s32be,pcm_f32be,pcm_f64be,aac,alac,mp3,flac,opus,vorbis,h264,hevc,vp8,vp9,mpeg4,mjpeg',
+         '--enable-encoder=pcm_s16le,aac,flac,rawvideo,mjpeg',
+         '--enable-parser=aac,mpegaudio,flac,opus,vorbis,h264,hevc,vp8,vp9,mpeg4video,mjpeg',
+         '--enable-filter=aresample,aformat,anull,volume,fps,scale', '--enable-swresample', '--enable-swscale']
 binary = ROOT / 'frontend/src-tauri/binaries/ffmpeg-aarch64-apple-darwin'
 binary.parent.mkdir(parents=True, exist_ok=True)
-shutil.copy2(source/'ffmpeg', binary)
+with TemporaryDirectory(prefix='ffmpeg-build-', dir=RUNTIME) as build:
+    with tarfile.open(archive) as handle:
+        handle.extractall(build, filter='data')
+    source = Path(build) / 'ffmpeg-8.0'
+    subprocess.run(['./configure', *flags], cwd=source, check=True)
+    subprocess.run(['make', '-j4'], cwd=source, check=True)
+    shutil.copy2(source / 'ffmpeg', binary)
+    shutil.copy2(source / 'COPYING.LGPLv2.1', RUNTIME / 'COPYING.LGPLv2.1')
 output = subprocess.check_output([str(binary), '-L'], stderr=subprocess.STDOUT).decode()
 if 'GNU Lesser General Public License' not in ' '.join(output.split()):
     raise ValueError('Expected LGPL-only FFmpeg build')

@@ -118,6 +118,42 @@ class RecoveryPipelineTests(PipelineFixture):
         self.assertIsNone(second)
         self.assertEqual(decoded, 0)
 
+    def test_names_confirmed_live_travel_with_the_transcript_when_the_service_accepts_them(self):
+        class CombinedAPI(RecordingAPI):
+            def __init__(self):
+                super().__init__()
+                self.bodies = []
+
+            def call(self, method, path, body=None):
+                if path.endswith('/transcript'):
+                    super().call(method, path, body)
+                    self.bodies.append(body)
+                    return {'job_id': 'named-document', 'transcript_version': 2, 'speakers_applied': True}
+                if path.endswith('/speakers/batch'):
+                    raise AssertionError('names were sent a second time')
+                return super().call(method, path, body)
+
+        api = CombinedAPI()
+        action = {'action': 'confirm', 'speaker_id': 'live-confirmed:fixture',
+                  'employee_id': '22222222-2222-4222-8222-222222222222', 'name': 'Persona sintética'}
+        with patch('synth.speakers.finalize_capture.export_confirmations',
+                   side_effect=lambda content, *args: (content, [action])):
+            task, _ = self.run_pipeline(api)
+        self.assertEqual(task['state'], 'succeeded')
+        self.assertEqual(api.bodies[0]['speaker_batch'], {'actions': [action]})
+        self.assertEqual(task['result']['job_id'], 'named-document')
+        self.assertEqual(task['checkpoints']['voice_applied']['transcript_version'], 2)
+
+    def test_unavailable_live_confirmations_do_not_fail_the_meeting(self):
+        api = RecordingAPI()
+        with patch('synth.speakers.finalize_capture.export_confirmations', side_effect=OSError('keychain timeout')), \
+             self.assertLogs('synth.worker', level='WARNING') as logs:
+            task, _ = self.run_pipeline(api)
+        self.assertEqual(task['state'], 'succeeded')
+        self.assertEqual(len(api.uploads), 1)
+        self.assertIn('voice_confirmations_unavailable', '\n'.join(logs.output))
+        self.assertNotIn('keychain timeout', '\n'.join(logs.output))
+
     def test_voice_confirmation_retry_after_upload_reuses_text_and_deleted_audio(self):
         from synth.server.desktop_host import public_task
         from synth.server.task_status import document_action, project_task
@@ -148,14 +184,15 @@ class RecoveryPipelineTests(PipelineFixture):
         with patch('synth.speakers.finalize_capture.export_confirmations',
                    side_effect=lambda content, *args: (content, [action])):
             first, decoded = self.run_pipeline(api)
-            self.assertEqual(first['state'], 'failed')
+            # A passing outage: the task waits to try again by itself, and can be started now.
+            self.assertEqual((first['state'], first['error_code']), ('queued', 'api_unavailable'))
             self.assertEqual(decoded, 2)
             self.assertIn('uploaded', first['checkpoints'])
             self.assertIn('voice_plan', first['checkpoints'])
             self.assertNotIn('voice_applied', first['checkpoints'])
             self.assertFalse(list(self.capture.rglob('*.wav')))
             view = project_task(public_task(first), api)
-            self.assertEqual(view['state'], 'failed')
+            self.assertEqual(view['state'], 'queued')
             self.assertEqual(view['stage'], 'confirming_voices')
             self.assertTrue(view['voice_confirmation_pending'])
             self.assertTrue(view['can_retry'])

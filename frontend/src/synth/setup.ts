@@ -10,7 +10,7 @@ export const SYNTH_DOCUMENT_ROUTE = 'configured_gateway';
 export type CheckState = 'pending' | 'ok' | 'warn' | 'error';
 export type CheckKey = 'model' | 'service' | 'synth' | 'minutes';
 export interface Check { key: CheckKey; label: string; state: CheckState; value: string; fix?: string }
-export type Permission = 'mic' | 'system';
+export type Permission = 'mic' | 'system' | 'screen';
 export type PermissionState = 'unknown' | 'granted' | 'denied';
 
 interface HostStatus { worker?: Record<string, unknown>; document_route?: string; asr_backend?: string; audio_setup?: { state: string; message?: string } }
@@ -67,17 +67,23 @@ export function readyToRecord(checks: Check[]): boolean {
   return checks.every(check => check.state === 'ok' || check.state === 'warn');
 }
 
+const PERMISSION_COMMANDS: Record<Permission, string> = {
+  mic: 'trigger_microphone_permission',
+  system: 'trigger_system_audio_permission_command',
+  screen: 'synth_request_screen_permission',
+};
+
 export async function requestPermission(kind: Permission): Promise<PermissionState> {
   try {
-    const granted = await invoke<boolean>(kind === 'mic' ? 'trigger_microphone_permission' : 'trigger_system_audio_permission_command');
-    return granted ? 'granted' : 'denied';
+    return await invoke<boolean>(PERMISSION_COMMANDS[kind]) ? 'granted' : 'denied';
   } catch {
     return 'denied';
   }
 }
 
-export function openPrivacySettings(): Promise<void> {
-  return invoke('open_system_settings');
+export function openPrivacySettings(kind: Permission): Promise<void> {
+  const preferencePane = kind === 'mic' ? 'Privacy_Microphone' : 'Privacy_ScreenCapture';
+  return invoke('open_system_settings', { preferencePane });
 }
 
 export async function setupCompleted(): Promise<boolean> {

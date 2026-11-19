@@ -58,3 +58,23 @@ test('failed handoff exits saving and preserves the closed capture for retry', a
   expect(state.statusMessage).toContain('Servicio temporalmente no disponible');
   expect(readCapture()?.folder_path).toBe('/synthetic/closed');
 });
+
+test('a meeting whose per-source audio closed is processed even when the mixed recording failed', async () => {
+  enqueue = async () => ({id: 'task-b'});
+  await prepare();
+  await act(async () => handlers.get('recording-stopped')?.forEach(fn=>fn({payload: {capture_id: 'capture-a',
+    folder_path: '/synthetic/closed', save_status: 'audio_disabled', source_archive_ready: true}})));
+  expect(state.status).toBe(RecordingStatus.COMPLETED);
+  expect(readCapture()).toBeNull();
+});
+
+test('a capture whose per-source audio did not close is not sent to processing', async () => {
+  let sent = false;
+  enqueue = async () => {sent = true; return {id: 'task-c'};};
+  await prepare();
+  await act(async () => handlers.get('recording-stopped')?.forEach(fn=>fn({payload: {capture_id: 'capture-a',
+    folder_path: '/synthetic/open', save_status: 'saved', source_archive_ready: false}})));
+  await act(async () => { await new Promise(done => setTimeout(done, 5)); });
+  expect(state.status).toBe(RecordingStatus.ERROR);
+  expect(sent).toBe(false);
+});

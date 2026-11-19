@@ -6,7 +6,6 @@ The immutable per-capture copy preserves the inference policy across restarts.
 import hashlib
 import json
 from pathlib import Path
-import time
 
 from .consolidated_capture import atomic_json
 from .live_voice import load_owner
@@ -50,7 +49,11 @@ def load(state, folder, capture_id):
     pending = state/'prepared-capture-context.json'
     if pending.is_file() and not pending.is_symlink() and pending.stat().st_size <= 32768:
         value = json.loads(pending.read_text())
-        if value.get('owner') == owner and 0 <= time.time()-value.get('created_at', 0) <= 120:
+        # The preparation belongs to the capture that started right after it,
+        # however long the model then takes to attach (it may wait for a
+        # previous meeting to finish transcribing).
+        started = (folder/'capture-owner.json').stat().st_mtime
+        if value.get('owner') == owner and -30 <= started-value.get('created_at', 0) <= 120:
             terms = vocabulary(value['terms'])
     atomic_json(path, {'owner': owner, 'capture_id': capture_id, 'terms': terms})
     return terms

@@ -37,7 +37,7 @@ function MeetingDetailContent({ id, refreshToken, folders, onBack, onChanged }: 
   const [decisions, setDecisions] = useState<DecisionRow[]>([]);
   const [voice, setVoice] = useState<VoiceStatus | null>(null);
   const [tab, setTab] = useState<Tab>('minutes');
-  const [panel, setPanel] = useState<'transcript' | 'voices' | 'items' | null>(null);
+  const [panel, setPanel] = useState<'transcript' | 'voices' | 'items' | 'media' | null>(null);
   const [focused, setFocused] = useState<string | null>(null);
   const [scrollTo, setScrollTo] = useState<string | null>(null);
   const [error, setError] = useState('');
@@ -65,7 +65,12 @@ function MeetingDetailContent({ id, refreshToken, folders, onBack, onChanged }: 
     try {
       const m = await request<Meeting>('GET', `/v1/meetings/${id}`);
       if (!current()) return;
-      setMeeting(old => notesDirty.current && old?.id === id ? { ...m, notes: old.notes, revision: old.revision } : m);
+      // An unsaved draft keeps its own text. Its conflict check moves forward
+      // when the service still holds the notes this draft started from: the
+      // revision advanced because of a regeneration or a speaker, not because
+      // someone else edited the notes.
+      setMeeting(old => notesDirty.current && old?.id === id ? { ...m, notes: old.notes,
+        revision: (m.notes ?? '') === savedNotes.current ? m.revision : old.revision } : m);
       if (!notesDirty.current) { setNotes(m.notes ?? ''); savedNotes.current = m.notes ?? ''; }
       const [t, d, ts, ds] = await Promise.allSettled([
         request<TranscriptVersion>('GET', `/v1/meetings/${id}/transcript`), request<MinutesResponse>('GET', `/v1/meetings/${id}/minutes`),
@@ -81,12 +86,37 @@ function MeetingDetailContent({ id, refreshToken, folders, onBack, onChanged }: 
     } catch (e) { if (current()) setError(message(e)); } finally { if (current()) setLoading(false); }
   }, [id]);
   useEffect(() => { setLoading(true); void load(); }, [load, refreshToken, tick]);
+  const processing = Boolean(meeting && PROCESSING.includes(meeting.state));
   useEffect(() => {
-    if (!meeting || !PROCESSING.includes(meeting.state)) return;
-    const timer = setTimeout(() => setTick(t => t + 1), 4000);
+    // An interval, not a chain of timers: one failed refresh must not leave
+    // the screen waiting for an acta that is already there.
+    if (!processing) return;
+    const timer = setInterval(() => setTick(t => t + 1), 4000);
+    return () => clearInterval(timer);
+  }, [processing]);
+  const meetingRef = useRef(meeting); meetingRef.current = meeting;
+  const [autosave, setAutosave] = useState<'idle' | 'saving' | 'failed'>('idle');
+  const persistNotes = useCallback(async () => {
+    const submitted = notesValue.current, current = meetingRef.current;
+    if (!notesDirty.current || !current || submitted === savedNotes.current) return;
+    const result = await request<{ revision: number }>('PUT', `/v1/meetings/${id}/notes`, { notes: submitted, expected_revision: current.revision });
+    savedNotes.current = submitted;
+    if (activeId.current !== id) return;
+    notesDirty.current = notesValue.current !== submitted;
+    setMeeting(old => old ? { ...old, notes: submitted, revision: result.revision } : old);
+  }, [id]);
+  useEffect(() => {
+    // Notes save themselves a moment after the person stops typing.
+    if (!notesDirty.current) return;
+    const timer = setTimeout(() => {
+      setAutosave('saving');
+      void persistNotes().then(() => setAutosave('idle')).catch(() => setAutosave('failed'));
+    }, 1500);
     return () => clearTimeout(timer);
-  }, [meeting]);
-  const generation = useGeneration(id, transcript?.version, Boolean(meeting && PROCESSING.includes(meeting.state)), () => { void load(); });
+  }, [notes, persistNotes]);
+  // Leaving the meeting (sidebar, a detected call) sends what was typed.
+  useEffect(() => () => { void persistNotes().catch(() => undefined); }, [persistNotes]);
+  const generation = useGeneration(id, transcript?.version, processing, () => { void load(); });
 
   const content = transcript?.content;
   const speaker = useMemo(() => content ? speakerNames(content) : () => 'Voz sin identificar', [content]);
@@ -144,7 +174,7 @@ function MeetingDetailContent({ id, refreshToken, folders, onBack, onChanged }: 
 
   const turns = content ? turnsOf(content) : [];
   const labels = [...new Set(turns.flatMap(turn => turn.speaker_id ? [turn.speaker_id] : []))];
-  const toggle = (next: 'transcript' | 'voices' | 'items') => setPanel(before => before === next ? null : next);
+  const toggle = (next: 'transcript' | 'voices' | 'items' | 'media') => setPanel(before => before === next ? null : next);
   async function copyLink() {
     try { await navigator.clipboard.writeText(`synth-voice://meeting/${id}`); setToast('Enlace interno copiado. Se mantienen los permisos de acceso.'); }
     catch (failure) { setError(message(failure)); }
@@ -170,6 +200,8 @@ function MeetingDetailContent({ id, refreshToken, folders, onBack, onChanged }: 
     {toast && <p role="status" className="meeting-receipt"><Check size={14} />{toast}</p>}
     {meeting && <header className="meeting-document-head"><h1>{meeting.title}</h1>
       <div className="meeting-metadata">
+        {!!content?.media_observations?.length && <button type="button" className="meeting-chip"
+          aria-controls="meeting-media" aria-expanded={panel === 'media'} onClick={() => toggle('media')}>Material de apoyo</button>}
         <div className="meeting-view-toggle" aria-label="Vista de la reunión"><button type="button" aria-pressed={tab === 'notes'} onClick={() => setTab('notes')}><AlignLeft size={17} /> Mis notas</button><button type="button" aria-pressed={tab === 'minutes'} onClick={() => setTab('minutes')}><Sparkles size={17} /> Acta</button></div>
         <Popover><PopoverTrigger asChild><button type="button" className="meeting-chip"><CalendarDays size={17} />{meeting.created_at ? new Date(meeting.created_at).toLocaleDateString('es-ES', { day:'numeric', month:'short' }) : 'Reunión'}<Users size={17} />{labels.length}</button></PopoverTrigger>
           <PopoverContent className="meeting-popover" align="start"><h2>{meeting.title}</h2><p>{meeting.created_at && new Date(meeting.created_at).toLocaleDateString('es-ES',{weekday:'long',day:'numeric',month:'long'})}{content && ` · ${duration(content.duration_ms)}`}</p>
@@ -180,15 +212,31 @@ function MeetingDetailContent({ id, refreshToken, folders, onBack, onChanged }: 
           <PopoverContent className="meeting-popover" align="start"><label>Guardar en<select className="voice-input" aria-label="Carpeta de la reunión" value={meeting.folder_id ?? ''} disabled={busy} onChange={event => void move(event.target.value)}><option value="">Privada · Sin carpeta</option>{folders.filter(folder => folder.can_edit).map(folder => <option key={folder.id} value={folder.id}>{folder.name}</option>)}</select></label></PopoverContent></Popover>
       </div>
     </header>}
-    <div hidden={tab !== 'notes'}><div className="meeting-save"><Button variant="outline" size="sm" loading={busy} disabled={notes === (meeting?.notes ?? '')} onClick={() => void saveNotes()}>Guardar notas</Button><span>{notesDirty.current ? 'Cambios sin guardar' : 'Notas guardadas'}</span></div>
+    <div hidden={tab !== 'notes'}><div className="meeting-save"><Button variant="outline" size="sm" loading={busy} disabled={notes === (meeting?.notes ?? '')} onClick={() => void saveNotes()}>Guardar notas</Button><span role="status">{autosave === 'failed' ? 'No se han podido guardar. Pulsa Guardar notas para reintentar.' : autosave === 'saving' ? 'Guardando…' : notesDirty.current ? 'Se guardan solas en un momento' : 'Notas guardadas'}</span></div>
       <MeetingNotes value={notes} onChange={value => { notesValue.current = value; notesDirty.current = value !== savedNotes.current; setNotes(value); }} label="Tus notas" /></div>
     {tab === 'minutes' && (
       generation.draft && (generation.draft.topics.length > 0 || generation.draft.text || !minutes) ? <div className="notebook-reading"><MinutesPreview draft={generation.draft} error={generation.error} reconnect={generation.reconnect} cite={cite} speaker={speaker} onFocus={setFocused} onOpen={openTurn} /></div> :
-      minutes ? <div className="notebook-reading"><MinutesDocument minutes={minutes.minutes} cite={cite} speaker={speaker} onFocus={setFocused} onOpen={openTurn} /></div> : <Empty processing={Boolean(meeting && PROCESSING.includes(meeting.state))} onRegenerate={content ? regenerate : undefined} busy={busy} />)}
+      minutes ? <div className="notebook-reading"><MinutesDocument minutes={minutes.minutes} cite={cite} speaker={speaker} onFocus={setFocused} onOpen={openTurn} /></div> : <Empty processing={processing} loading={loading} onRegenerate={content ? regenerate : undefined} busy={busy} />)}
     <div className="meeting-bottom"><div className="meeting-dock">
       <div className="meeting-capture-panels"><button type="button" className="meeting-chip" aria-label="Transcripción" aria-controls="meeting-transcript" aria-expanded={panel === 'transcript'} onClick={() => toggle('transcript')}><AudioLines size={20} /><span>Transcripción</span><ChevronDown size={15} /></button><button type="button" className="meeting-chip" aria-label="Voces" aria-controls="meeting-voices" aria-expanded={panel === 'voices'} onClick={() => toggle('voices')}><Users size={19} /><span>Voces</span></button></div>
       {content ? <MeetingQuestion key={id} meetingId={id} onOpenCitation={openTurn} /> : <div className="meeting-ask-disabled">Las preguntas estarán disponibles con la transcripción.</div>}
     </div></div>
+    <MeetingPanel id="meeting-media" title="Material de apoyo" open={panel === 'media'} onClose={() => setPanel(null)}>
+      <div className="meeting-voices-list">{content?.media_observations?.map((item, index) => <article key={index}>
+        <h3>{item.label}{item.at_ms != null && <> · <time>{clock(item.at_ms)}</time></>}</h3>
+        {item.visual && <>
+          <p>{item.visual.scene}</p>
+          {item.visual.change && <p><strong>Cambio observado</strong><br />{item.visual.change}</p>}
+          {item.visual.speech_reference_ms != null &&
+            <p className="voice-notice">Referencia en el audio · {clock(item.visual.speech_reference_ms)}</p>}
+        </>}
+        {item.visual_unavailable && <p className="voice-notice">Descripción visual pendiente.</p>}
+        {item.status === 'read' && (item.visual ? <details><summary>Texto visible</summary>
+          <p className="whitespace-pre-wrap">{item.text}</p></details> : <p className="whitespace-pre-wrap">{item.text}</p>)}
+        {!item.visual && item.status !== 'read' && <p>{item.status === 'unreadable' ?
+          'No se pudo analizar el archivo.' : 'No se encontró texto legible.'}</p>}
+      </article>)}</div>
+    </MeetingPanel>
     <MeetingPanel id="meeting-transcript" title="Transcripción" open={panel === 'transcript'} onClose={() => setPanel(null)} footer={content ? `${duration(content.duration_ms)} · ${labels.length} hablantes` : 'Transcripción'} actions={content && <Button variant="ghost" aria-label="Copiar transcripción" onClick={() => { void navigator.clipboard.writeText(turns.map(turn => `${speaker(turn.speaker_id)}: ${turn.text}`).join('\n\n')).then(() => setToast('Transcripción copiada.')).catch(failure => setError(message(failure))); }}><Copy size={16} /></Button>}>
       {content ? <TranscriptScript content={content} speaker={speaker} voice={voice} focused={focused} scrollTo={scrollTo} busy={busy} onSpeaker={onSpeaker} onUndo={onUndo} onAccept={onAccept} onReject={onReject} showSpeakerPrompts={false} /> : <p className="meeting-empty">La transcripción aparecerá al terminar el análisis del audio.</p>}
     </MeetingPanel>
@@ -226,7 +274,9 @@ function MeetingAccess({ meeting, folders, busy, move, copyLink }: { meeting: Me
   </Popover>;
 }
 
-function Empty({ processing, onRegenerate, busy }: { processing: boolean; onRegenerate?: () => void; busy: boolean }) {
+function Empty({ processing, loading, onRegenerate, busy }: { processing: boolean; loading: boolean; onRegenerate?: () => void; busy: boolean }) {
+  // While the acta is being fetched, nothing is known about it yet.
+  if (loading && !processing) return <div className="voice-empty" role="status" aria-busy="true"><h2>Cargando el acta…</h2></div>;
   return <div className="voice-empty">
     <h2>{processing ? 'El acta se está generando' : 'Esta reunión aún no tiene acta'}</h2>
     <p>{processing ? 'Se actualizará sola en cuanto esté lista.' : 'Puedes leer la transcripción o pedir un acta nueva.'}</p>

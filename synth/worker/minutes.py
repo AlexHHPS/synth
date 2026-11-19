@@ -158,7 +158,7 @@ def topic_prompt(context: MeetingContext, kind: str, topic: dict[str, Any], *, e
             f"no crea una tarea. Conserva autocompromisos reales aunque el hablante no tenga nombre y la tarea "
             f"no tenga fecha. No conviertas una recomendación en acuerdo sin aceptación. Si no hay un cierre "
             f"concreto, outcome puede quedar vacío; no repitas el mismo hecho en todos los campos. ") if experimental else ''
-    return (f"{context.header()}\n\nTipo de reunión: {kind}. {TEMPLATES.get(kind, '')}\n"
+    return (f"{context.header()}{context.media_prompt(topic['lines'])}\n\nTipo de reunión: {kind}. {TEMPLATES.get(kind, '')}\n"
             f"Tema: {topic['title']}\n\nExtrae del tema SOLO lo que dicen estas líneas. Cada punto lleva un dato concreto; "
             f"{extra}"
             f"nada de frases genéricas («se habló de», «se discutieron varios temas»). Responsable: el nombre del hablante "
@@ -223,6 +223,21 @@ def resolve_due(due_text: str | None, model_date: str | None, started: datetime.
     return None
 
 
+def plausible_due(due_text: str | None, model_date: Any, started: datetime.datetime | None) -> str | None:
+    """The model's reading of a spoken deadline the fixed patterns do not cover («a final de mes», «en dos semanas»).
+
+    Only with the original expression in the cited text, and only for a day
+    between the meeting and a year later; anything else stays undated.
+    """
+    if not due_text or not model_date or not started:
+        return None
+    try:
+        date = datetime.date.fromisoformat(str(model_date))
+    except ValueError:
+        return None
+    return date.isoformat() if 0 <= (date - started.date()).days <= 366 else None
+
+
 def validate_topic(topic: dict[str, Any], participants: set[str], previous: set[str], lenient: bool = False,
                    started: datetime.datetime | None = None) -> Callable[[Any], dict]:
     """Strict: any invalid item rejects the answer. Lenient (salvage): invalid items are dropped and counted."""
@@ -278,7 +293,7 @@ def _validate_topic(topic: dict[str, Any], participants: set[str], previous: set
             prior = task.get("previous") if task.get("previous") in previous else None
             result["tasks"].append({"title": _text(task.get("title"), "title", 300), "description": _optional(task.get("description"), 1000) or "",
                                     "owner": owner, "owner_evidence": evidence if owner != "sin asignar" else "ninguno",
-                                    "due_text": due_text, "due_date": resolve_due(due_text, _date(task.get("due_date")), started),
+                                    "due_text": due_text, "due_date": resolve_due(due_text, _date(task.get("due_date")), started) or plausible_due(due_text, task.get("due_date"), started),
                                     "done_criteria": _optional(task.get("done_criteria")), "depends_on": [d for d in task.get("depends_on") or [] if isinstance(d, str)][:5],
                                     "lifecycle": lifecycle if (lifecycle == "nueva" or prior) else "nueva", "previous": prior,
                                     "citations": cited, "confidence": float(task["confidence"]) if isinstance(task.get("confidence"), (int, float)) else None})

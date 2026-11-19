@@ -35,7 +35,14 @@ class FakeModel:
     def __call__(self, messages, max_tokens):
         self.calls.append(messages)
         user = messages[1]["content"]
-        if "Divide este tramo" in user:
+        if "Escribe el acta de este texto" in user and len(messages) == 2:
+            # One pass (0.6.0): every topic of the window in a single answer.
+            titles = ["Piloto de Valdivar", "Infraestructura y permisos"]
+            answers, self.topic_answers = self.topic_answers[:2], self.topic_answers[2:]
+            body = {"meeting_type": "comite", "topics": [{"title": title, **answer} for title, answer in zip(titles, answers)],
+                    "continuity": self.continuity, "entities": self.entities,
+                    "tldr": "El comité mueve el piloto de Valdivar al 15 de noviembre y elige Nimbus por la UE."}
+        elif "Divide este tramo" in user:
             body = {"meeting_type": "comite", "topics": [{"title": "Piloto de Valdivar", "first": "t000000", "last": "t000001"},
                                                           {"title": "Infraestructura y permisos", "first": "t000002", "last": "t000003"}]}
         elif "Revisa las líneas y devuelve SOLO lo que falte" in user:

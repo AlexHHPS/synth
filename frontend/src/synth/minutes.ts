@@ -11,9 +11,15 @@ export interface Correction {
   status: 'applied' | 'undone' | 'suggested' | 'rejected'; origin?: 'modelo' | 'alias' | 'contexto' | null;
   start?: number | null; turn_id?: string | null; turn_start?: number | null;
 }
+export interface MediaObservation {
+  kind: 'screenshot' | 'video_frame' | 'attachment';
+  label: string; at_ms: number | null; text: string; status: 'read' | 'no_text' | 'unreadable';
+  visual?: { model: string; scene: string; change: string; compared_to_ms: number | null; speech_reference_ms: number | null };
+  visual_unavailable?: boolean;
+}
 export interface TranscriptContent {
   language: string; duration_ms: number; model_fingerprint?: string; segments: SegmentV2[]; turns?: Turn[];
-  speakers?: Record<string, ResolvedSpeaker>; corrections?: Correction[]; raw_version?: number;
+  speakers?: Record<string, ResolvedSpeaker>; corrections?: Correction[]; raw_version?: number; media_observations?: MediaObservation[];
 }
 export interface TranscriptVersion { version: number; content_hash?: string; model_fingerprint: string; content: TranscriptContent }
 

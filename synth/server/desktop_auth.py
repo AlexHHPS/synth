@@ -24,6 +24,7 @@ SERVICE = "dev.synth.voice.supabase"
 from synth.config import API_URL as API, SUPABASE_URL as SUPABASE
 ACCOUNT = SUPABASE or API
 FLOW = None
+DRIVE = None
 GATE = threading.RLock()
 
 
@@ -151,12 +152,12 @@ def capture_identity():
             'principal_id': session.get('principal_id') if session else None}
 
 
-def begin(calendar=False):
+def begin(calendar=False, drive=False):
     global FLOW
     config=configuration()
     if config.get("mode")!="supabase": raise ValueError("auth_not_enabled")
     with GATE:
-        previous = access() if calendar else None
+        previous = access() if calendar or drive else None
         if calendar:
             state = fetch(API+'/v1/calendar',headers={'Authorization':'Bearer '+previous['access_token']})
             if state.get('configured') is not True:
@@ -165,19 +166,22 @@ def begin(calendar=False):
         challenge=base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
         redirect="http://127.0.0.1:18383/auth/callback/"+nonce
         FLOW={"nonce":nonce,"verifier":verifier,"expires_at":time.time()+300,"state":"waiting","config":config,
-              "calendar":calendar, "principal_id": previous['principal_id'] if previous else None}
+              "calendar":calendar, "drive":drive, "principal_id": previous['principal_id'] if previous else None}
         params={"provider":"google","redirect_to":redirect,
             "code_challenge":challenge,"code_challenge_method":"s256","scopes":"openid email profile","prompt":"select_account"}
         if calendar:
             params.update(scopes='openid email profile https://www.googleapis.com/auth/calendar.events.readonly',
                           access_type='offline', prompt='consent select_account')
+        if drive:
+            params.update(scopes='openid email profile https://www.googleapis.com/auth/drive.readonly',
+                          prompt='consent select_account')
         url=SUPABASE+"/auth/v1/authorize?"+urllib.parse.urlencode(params)
         subprocess.run(["/usr/bin/open",url],check=True,capture_output=True,timeout=10)
         return {"state":"waiting"}
 
 
 def callback(path):
-    global FLOW
+    global DRIVE
     parsed=urllib.parse.urlsplit(path); query=urllib.parse.parse_qs(parsed.query)
     with GATE:
         flow=FLOW
@@ -193,10 +197,23 @@ def callback(path):
             # login can invalidate this flow while its network request finishes.
             if FLOW is not flow or flow['state'] != 'completing' or flow['expires_at'] < time.time():
                 raise ValueError('auth_callback_invalid')
-            previous = read_session() if flow.get('calendar') else None
-            if flow.get('calendar') and (not previous or previous['principal_id'] != flow['principal_id']):
+            connection = flow.get('calendar') or flow.get('drive')
+            previous = read_session() if connection else None
+            if connection and (not previous or previous['principal_id'] != flow['principal_id']):
                 raise ValueError('auth_identity_changed')
+            if flow.get('drive'):
+                actor = fetch(API+'/v1/me', headers={'Authorization': 'Bearer '+value.get('access_token', '')})
+                token = value.get('provider_token')
+                if actor.get('id') != previous['principal_id']:
+                    raise ValueError('auth_identity_changed')
+                if not isinstance(token, str) or not token:
+                    raise ValueError('drive_permission_required')
+                DRIVE = {'principal_id': actor['id'], 'token': token, 'expires_at': time.time() + 3000}
+                flow.update(state="signed_in", error_code=None)
+                return
             session = accept_tokens(value,flow["config"],previous) if previous else accept_tokens(value,flow["config"])
+            if DRIVE is not None and DRIVE['principal_id'] != session['principal_id']:
+                DRIVE = None
             if flow.get('calendar'):
                 if not value.get('provider_token') or not value.get('provider_refresh_token'):
                     raise ValueError('calendar_offline_permission_required')
@@ -211,10 +228,11 @@ def callback(path):
 
 
 def logout():
-    global FLOW
+    global FLOW, DRIVE
     with session_lock():
         # Invalidate browser callbacks even when remote revocation fails.
         FLOW=None
+        DRIVE=None
         session=read_session()
         if session:
             try: fetch(SUPABASE+"/auth/v1/logout?scope=local","POST",{}, {"apikey":session["publishable_key"],"Authorization":"Bearer "+session["access_token"]})
@@ -222,3 +240,24 @@ def logout():
                 result=subprocess.run(["/usr/bin/security","delete-generic-password","-s",SERVICE,"-a",ACCOUNT],capture_output=True,timeout=10)
                 if result.returncode: raise ValueError("auth_keychain_delete_failed")
     return {"signed_in":False}
+
+def drive_state():
+    identity = capture_identity()
+    if identity.get("mode") == "keys":
+        return {"state": "unavailable"}
+    with GATE:
+        flow = FLOW if FLOW and FLOW.get("drive") and FLOW["principal_id"] == identity.get("principal_id") else None
+        if identity["signed_in"] and DRIVE and DRIVE["principal_id"] == identity.get("principal_id") and DRIVE["expires_at"] > time.time():
+            return {"state": "connected"}
+        if flow and flow["expires_at"] > time.time():
+            return {"state": flow["state"], "error_code": flow.get("error_code")}
+    return {"state": "disconnected"}
+
+
+def drive_access():
+    identity = capture_identity()
+    with GATE:
+        if (not identity["signed_in"] or not DRIVE or DRIVE["expires_at"] <= time.time()
+                or DRIVE["principal_id"] != identity.get("principal_id")):
+            raise ValueError("drive_connection_required")
+        return dict(DRIVE)

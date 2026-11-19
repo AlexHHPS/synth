@@ -23,7 +23,8 @@ def project_task(view, api):
     view = dict(view)
     view['capture_state'] = view['state']
     if view.get('voice_confirmation_pending'):
-        return {**view, 'can_retry': view['state'] == 'failed'}
+        # A task waiting to try again by itself can also be started now.
+        return {**view, 'can_retry': view['state'] == 'failed' or (view['state'] == 'queued' and bool(view.get('error_code')))}
     if not view.get('meeting_id'):
         return view
     try:

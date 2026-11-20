@@ -967,6 +967,7 @@ pub fn run() {
             synth_media::synth_preview_video,
             synth_media::synth_enqueue_video,
             synth_media::synth_download_drive_media,
+            synth_desktop::synth_export_meeting_text,
             synth_recovery::synth_list_recovered_captures,
             // System settings commands
             #[cfg(target_os = "macos")]

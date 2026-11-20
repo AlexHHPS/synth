@@ -3,8 +3,48 @@ use serde_json::Value;
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
 use std::path::{Path, PathBuf};
-use std::io::Read;
+use std::io::{Read, Write};
+use tauri_plugin_dialog::DialogExt;
 use sha2::{Digest, Sha256};
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeetingTextKind {
+    Minutes,
+    Transcript,
+}
+
+#[tauri::command]
+pub async fn synth_export_meeting_text(
+    app: AppHandle,
+    kind: MeetingTextKind,
+    content: String,
+) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (label, filename, extension) = match kind {
+            MeetingTextKind::Minutes => ("Markdown", "acta.md", "md"),
+            MeetingTextKind::Transcript => ("Texto", "transcripcion.txt", "txt"),
+        };
+        let selection = app.dialog().file()
+            .set_file_name(filename)
+            .add_filter(label, &[extension])
+            .blocking_save_file();
+        let Some(selection) = selection else {
+            return Ok(false);
+        };
+        let path = selection.into_path().map_err(|_| "Selecciona un destino local.")?;
+        let parent = path.parent().ok_or("Selecciona una carpeta de destino.")?;
+        let mut output = tempfile::NamedTempFile::new_in(parent)
+            .map_err(|_| "No se pudo preparar el archivo de exportación.")?;
+        output.write_all(content.as_bytes())
+            .and_then(|_| output.as_file().sync_all())
+            .map_err(|_| "No se pudo escribir el archivo de exportación.")?;
+        output.persist(path).map_err(|_| "No se pudo guardar el archivo de exportación.")?;
+        Ok(true)
+    })
+    .await
+    .map_err(|_| "No se pudo abrir el diálogo para guardar el archivo.")?
+}
 
 pub fn capture_receipt(root: &Path, requested_folder: &Path) -> Result<Value, String> {
     let directory = root.canonicalize().map_err(|_| "No se encuentra el audio local.")?;

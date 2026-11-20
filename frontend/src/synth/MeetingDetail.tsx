@@ -3,7 +3,8 @@ import { brand } from './brand';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { AudioLines, CalendarDays, Check, ChevronDown, Copy, FolderPlus, Link2, ListChecks, LockKeyhole, Mail, MoreHorizontal, RotateCw, Sparkles, AlignLeft, Users } from 'lucide-react';
+import { invoke } from '@tauri-apps/api/core';
+import { AudioLines, CalendarDays, Check, ChevronDown, Copy, Download, FolderPlus, Link2, ListChecks, LockKeyhole, Mail, MoreHorizontal, RotateCw, Sparkles, AlignLeft, Users } from 'lucide-react';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
 import { MeetingPanel } from './MeetingPanel';
 import { MeetingQuestion } from './MeetingQuestion';
@@ -179,9 +180,24 @@ function MeetingDetailContent({ id, refreshToken, folders, onBack, onChanged }: 
     try { await navigator.clipboard.writeText(`synth-voice://meeting/${id}`); setToast('Enlace interno copiado. Se mantienen los permisos de acceso.'); }
     catch (failure) { setError(message(failure)); }
   }
+  const meetingMarkdown = () => request<{ markdown: string }>('GET', `/v1/meetings/${id}/document`);
+  const transcriptText = () => turns.map(turn => `${speaker(turn.speaker_id)}: ${turn.text}`).join('\n\n');
+
   async function copyMinutes() {
-    try { const document = await request<{ markdown: string }>('GET', `/v1/meetings/${id}/document`); await navigator.clipboard.writeText(document.markdown); setToast('Acta copiada.'); }
+    try { const document = await meetingMarkdown(); await navigator.clipboard.writeText(document.markdown); setToast('Acta copiada.'); }
     catch (failure) { setError(message(failure)); }
+  }
+
+  async function exportText(kind: 'minutes' | 'transcript') {
+    setBusy(true);
+    setToast('');
+    setError('');
+    try {
+      const content = kind === 'minutes' ? (await meetingMarkdown()).markdown : transcriptText();
+      const saved = await invoke<boolean>('synth_export_meeting_text', { kind, content });
+      if (saved) setToast(kind === 'minutes' ? 'Acta guardada.' : 'Transcripción guardada.');
+    } catch (failure) { setError(message(failure)); }
+    finally { setBusy(false); }
   }
   if (loading && !meeting) return <div className="meeting-editor" role="status" aria-busy="true">Cargando la reunión…</div>;
   return <div className="meeting-editor" data-slot="meeting-editor">
@@ -189,6 +205,7 @@ function MeetingDetailContent({ id, refreshToken, folders, onBack, onChanged }: 
       <Popover><PopoverTrigger asChild><Button variant="ghost" aria-label="Más opciones de la reunión"><MoreHorizontal size={19} /></Button></PopoverTrigger>
         <PopoverContent className="meeting-popover" align="end"><div className="meeting-menu-actions">
           <Button variant="ghost" disabled={busy || !minutes} onClick={() => void copyMinutes()}><Copy size={17} /> Copiar acta</Button>
+          <Button variant="ghost" disabled={busy || !minutes} onClick={() => void exportText('minutes')}><Download size={17} /> Guardar acta como Markdown</Button>
           <Button variant="ghost" disabled={busy || !minutes} onClick={() => void copyEmail()}><Mail size={17} /> Copiar borrador de email</Button>
           <Button variant="ghost" disabled={busy || !content} onClick={() => toggle('items')}><ListChecks size={17} /> Tareas y decisiones</Button>
           <Button variant="ghost" disabled={busy || !content || PROCESSING.includes(meeting?.state ?? '')} onClick={() => void regenerate()}><RotateCw size={17} /> Regenerar acta</Button>
@@ -237,7 +254,10 @@ function MeetingDetailContent({ id, refreshToken, folders, onBack, onChanged }: 
           'No se pudo analizar el archivo.' : 'No se encontró texto legible.'}</p>}
       </article>)}</div>
     </MeetingPanel>
-    <MeetingPanel id="meeting-transcript" title="Transcripción" open={panel === 'transcript'} onClose={() => setPanel(null)} footer={content ? `${duration(content.duration_ms)} · ${labels.length} hablantes` : 'Transcripción'} actions={content && <Button variant="ghost" aria-label="Copiar transcripción" onClick={() => { void navigator.clipboard.writeText(turns.map(turn => `${speaker(turn.speaker_id)}: ${turn.text}`).join('\n\n')).then(() => setToast('Transcripción copiada.')).catch(failure => setError(message(failure))); }}><Copy size={16} /></Button>}>
+    <MeetingPanel id="meeting-transcript" title="Transcripción" open={panel === 'transcript'} onClose={() => setPanel(null)} footer={content ? `${duration(content.duration_ms)} · ${labels.length} hablantes` : 'Transcripción'} actions={content && <>
+      <Button variant="ghost" aria-label="Copiar transcripción" onClick={() => { void navigator.clipboard.writeText(transcriptText()).then(() => setToast('Transcripción copiada.')).catch(failure => setError(message(failure))); }}><Copy size={16} /></Button>
+      <Button variant="ghost" disabled={busy || !turns.length} aria-label="Guardar transcripción como texto" onClick={() => void exportText('transcript')}><Download size={16} /></Button>
+    </>}>
       {content ? <TranscriptScript content={content} speaker={speaker} voice={voice} focused={focused} scrollTo={scrollTo} busy={busy} onSpeaker={onSpeaker} onUndo={onUndo} onAccept={onAccept} onReject={onReject} showSpeakerPrompts={false} /> : <p className="meeting-empty">La transcripción aparecerá al terminar el análisis del audio.</p>}
     </MeetingPanel>
     <MeetingPanel id="meeting-voices" title="Voces" open={panel === 'voices'} onClose={() => setPanel(null)} footer="Las sugerencias necesitan tu confirmación">

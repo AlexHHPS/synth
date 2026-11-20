@@ -13,6 +13,9 @@ In a call the microphone is "You"; system audio is separated by voice. System ec
 picked up by the microphone is removed before ASR. The transcript is organised in
 speaker turns with times; older citations to segments keep working.
 
+In the desktop app, save the transcript as a text file from the transcript
+panel or save the published minutes as Markdown from the meeting menu.
+
 ## Organisation glossary
 
 The glossary records who and what is named in meetings and what each thing is.

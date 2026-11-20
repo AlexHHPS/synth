@@ -1,7 +1,22 @@
+'use client';
+
+import { isTauri, invoke } from '@tauri-apps/api/core';
+import type { MouseEvent } from 'react';
+import { toast } from 'sonner';
 import Image from 'next/image';
 import { ExternalLink, ShieldCheck, AudioLines, Cloud } from 'lucide-react';
 import { brand } from '@/synth/brand';
 import packageInfo from '../../package.json';
+
+async function openBrandLink(event: MouseEvent<HTMLAnchorElement>) {
+  if (!isTauri()) return;
+  event.preventDefault();
+  try {
+    await invoke('open_external_url', { url: event.currentTarget.href });
+  } catch {
+    toast.error('No se pudo abrir el enlace. Comprueba tu navegador predeterminado.');
+  }
+}
 
 export function About() {
   return <article className="mx-auto max-w-3xl space-y-8 text-sm leading-relaxed">
@@ -18,7 +33,7 @@ export function About() {
     </div>
     <section className="rounded-xl border p-4"><h3 className="flex items-center gap-2 font-semibold"><ShieldCheck size={16} /> Privacidad y control</h3><p className="mt-2 text-muted-foreground">Las reuniones son privadas hasta que las compartes. Compartir tu perfil de voz requiere tu aceptación. El reconocimiento propone coincidencias de piloto pendientes de calibración; no sirve para autenticarte.</p></section>
     <nav aria-label="Información del producto" className="flex flex-wrap gap-x-5 gap-y-3">
-      {[[brand.documentation_url, 'Documentación'], [brand.source_url, 'Código fuente'], [brand.support_url, 'Soporte y problemas']].map(([url, label]) => <a key={label} href={url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 font-medium text-primary underline-offset-4 hover:underline">{label}<ExternalLink size={13} /></a>)}
+      {[[brand.documentation_url, 'Documentación'], [brand.source_url, 'Código fuente'], [brand.support_url, 'Soporte y problemas']].map(([url, label]) => <a key={label} href={url} onClick={openBrandLink} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 font-medium text-primary underline-offset-4 hover:underline">{label}<ExternalLink size={13} /></a>)}
     </nav>
     <details className="rounded-xl border p-4"><summary className="cursor-pointer font-semibold">Licencias y atribuciones</summary>
       <div className="mt-4 space-y-3 text-muted-foreground">
